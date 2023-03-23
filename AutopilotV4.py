@@ -130,8 +130,6 @@ def main():
             displayed_frame = frame.copy()
             corected_frame, masked_frame, true_left_line_x_pos, left_found, true_right_line_x_pos, right_found, true_lane_width = detect_lane_width(frame, displayed_frame)
 
-            average_lane_width = (true_lane_width + pre_line_width*100) / 101
-            pre_line_width = average_lane_width
 
             """
             smooth the lines and calculate the incertitude
@@ -152,6 +150,17 @@ def main():
             right_line_x_pos_prev = right_line_x_pos
             left_line_incertitude_prev = left_line_incertitude
             right_line_incertitude_prev = right_line_incertitude
+
+
+            """
+            calculate the average lane width
+            """
+            true_lane_width = int(true_lane_width) if (left_found and right_found) else int(pre_line_width)
+
+            average_lane_width = (true_lane_width + pre_line_width*100) / 101
+            pre_line_width = average_lane_width
+
+            
 
 
             
@@ -186,7 +195,7 @@ def main():
             """
             lane_position = ((left_line_x_pos + right_line_x_pos + width/2) / 3)
             lane_keeping_angle = np.arctan((lane_position - width/2) / height)
-            lane_keeping_angle = (lane_keeping_angle + lane_keeping_angle_prev*10) / 11
+            lane_keeping_angle = (lane_keeping_angle + lane_keeping_angle_prev*5) / 6
             lane_keeping_angle_prev = lane_keeping_angle
 
             """
