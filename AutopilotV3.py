@@ -103,13 +103,13 @@ def detect_lane(frame, displayed_frame):
         if left_found and right_found:
             break
 
-            
+
     """if either of the lines is not found, make it the same as the other one"""
     if not left_found and right_found:
-        left_line_x_pos = lane_center - (right_line_x_pos - lane_center)
+        left_line_x_pos = int(lane_center - (lane_width/1.75 - (right_line_x_pos - lane_center)))
         focus_lane = 2
     elif not right_found and left_found:
-        right_line_x_pos = lane_center + (lane_center - left_line_x_pos)
+        right_line_x_pos = int(lane_center + (lane_width/1.75 - (lane_center - left_line_x_pos)))
         focus_lane = 1
     elif right_found and left_found:
         focus_lane = 3
@@ -166,7 +166,7 @@ def main():
     """
     Video here
     """
-    cap = cv.VideoCapture('GP2.mp4')
+    cap = cv.VideoCapture('Test drive\\23_03_2023_02.MP4')
     while (cap.isOpened()):
 
         ret, frame = cap.read()
@@ -255,7 +255,7 @@ def main():
             else:
                 autopilot_available_color = UNAVAILABLE_COLOR
 
-            steering_angle = (lane_keeping-1)*125
+            steering_angle = (lane_keeping-1)*90
 
             """
             steering wheel (rotate with the steering angle) (made with 1 circle and 2 lines)
