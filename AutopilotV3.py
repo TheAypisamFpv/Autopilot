@@ -166,7 +166,7 @@ def main():
     """
     Video here
     """
-    cap = cv.VideoCapture('GP1.mp4')
+    cap = cv.VideoCapture('GP2.mp4')
     while (cap.isOpened()):
 
         ret, frame = cap.read()
