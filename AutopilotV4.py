@@ -13,11 +13,20 @@ width = 1920
 
 
 lane_center = int(width/2) + 15  # + offset
-car_hood = 230
+car_hood = 200
 lane_width = 1100
 detection_distance = 250
 distance_center = lane_center +5   # + offset
 distance_width = 150
+
+upper_left = [int(distance_center - distance_width/2), int(height - car_hood - detection_distance)]
+upper_right = [int(distance_center + distance_width/2),int(height - car_hood - detection_distance)]
+
+lower_left = [int(lane_center - lane_width/2), int(height-car_hood)]
+lower_right = [int(lane_center + lane_width/2), int(height-car_hood)]
+
+pts1 = np.float32([upper_left, lower_left, upper_right, lower_right])
+pts2 = np.float32([[0, 0], [0, height], [width, 0], [width, height]])
 
 
 
@@ -40,32 +49,22 @@ def pad_img_to_fit_bbox(img, x1, x2, y1, y2):
 
 def detect_lane_width(frame, displayed_frame):
 
-    upper_left = [int(distance_center - distance_width/2), int(height - car_hood - detection_distance)]
-    upper_right = [int(distance_center + distance_width/2), int(height - car_hood - detection_distance)]
-
-    lower_left = [int(lane_center - lane_width/2), int(height-car_hood)]
-    lower_right = [int(lane_center + lane_width/2), int(height-car_hood)]
-
-    pts1 = np.float32([upper_left, lower_left, upper_right, lower_right])
-    pts2 = np.float32([[0, 0], [0, height], [width, 0], [width, height]])
-
-
-
 
     """bird's eye view of display_frame"""
     M = cv.getPerspectiveTransform(pts1, pts2)
     displayed_frame = cv.warpPerspective(displayed_frame, M, (width, height))
 
     """modifiy contrast and brightness"""
-    alpha = 2
-    beta = -100
+    alpha = 1.5
+    beta = 0
     corected_frame = cv.convertScaleAbs(frame, alpha=alpha, beta=beta)
+    
 
     """blur the frame"""
-    blur_frame = cv.GaussianBlur(corected_frame, (5, 5), 0)
+    blur_frame = cv.GaussianBlur(corected_frame, (9, 9), 0)
 
     """detecet edges"""
-    canny_frame = cv.Canny(blur_frame, 100, 250)
+    canny_frame = cv.Canny(blur_frame, 75, 100)
 
     """Black or white frame"""
     bw_frame = cv.threshold(canny_frame, 127, 255, cv.THRESH_BINARY)[1]
@@ -76,9 +75,16 @@ def detect_lane_width(frame, displayed_frame):
     cv.fillPoly(mask, pts=[points], color=(255, 255, 255))
     masked_frame = cv.bitwise_and(bw_frame, mask)
 
+    blur_masked_frame = cv.GaussianBlur(masked_frame, (21, 21), 0)
+
+
     """transform the frame to bird's eye view"""
     M = cv.getPerspectiveTransform(pts1, pts2)
     masked_frame = cv.warpPerspective(masked_frame, M, (width, height))
+    blur_masked_frame = cv.warpPerspective(blur_masked_frame, M, (width, height))
+    bw_blur_masked_frame = cv.threshold(blur_masked_frame, 30, 255, cv.THRESH_BINARY)[1]
+
+    masked_frame = bw_blur_masked_frame
 
     """detect start of the lines"""
     left_line_x_pos = (width/2 - lane_width/2)
@@ -100,20 +106,12 @@ def detect_lane_width(frame, displayed_frame):
         if left_found and right_found:
             break
 
-    """detect car hood"""
-    car_hood_found = False
-    for pixel in range(10, int(height/2)):
-        if masked_frame[height-pixel, int(width/2-detecting_height):int(width/2+detecting_height)].any() > 0 and not car_hood_found:
-            car_hood = pixel
-            car_hood_found = True
-            break
-    
     
 
     """calculate the true lane width"""
     true_lane_width = int(right_line_x_pos - left_line_x_pos)
 
-    return displayed_frame, canny_frame, left_line_x_pos, left_found, right_line_x_pos, right_found, true_lane_width, car_hood
+    return displayed_frame, masked_frame, left_line_x_pos, left_found, right_line_x_pos, right_found, true_lane_width, car_hood
 
 def main():
     """
@@ -141,7 +139,7 @@ def main():
     """
     Video here
     """
-    cap = cv.VideoCapture('Test_drive\GPO_24_03_2023_02.MP4')
+    cap = cv.VideoCapture('Test drive\\24_03_2023_02.MP4')
 
     while (cap.isOpened()):
         ret, frame = cap.read()
