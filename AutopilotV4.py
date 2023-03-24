@@ -243,17 +243,17 @@ def main():
             lane keeping (using lane position and the angle from the bottom center)
             and display a line on the screen
             """
-            cv.line(displayed_frame, (int(lane_center), height-car_hood), (int(distance_center + np.tan(lane_keeping_angle)*(car_hood + detection_distance)/3), int(height-car_hood-detection_distance/2)), (0,0,0), 12)
+            cv.line(displayed_frame, (int(lane_center), height-car_hood), (int(distance_center + np.tan(lane_keeping_angle)*(car_hood + detection_distance)/3), int(height-car_hood-detection_distance/2)), (0,0,0), 14)
 
 
             """their foreground"""
             cv.line(corected_frame, (int(width/2), height), (int(left_line_x_pos), height-detecting_height), (0, 255, 0), 8)
-            cv.line(corected_frame, (int(left_line_x_pos), height-detecting_height), (int(left_line_x_pos), height), (AVAILABLE_COLOR[1] if left_found else UNAVAILABLE_COLOR[0]), 8)
+            cv.line(corected_frame, (int(left_line_x_pos), height-detecting_height), (int(left_line_x_pos), height), (AVAILABLE_COLOR[0] if left_found else AVAILABLE_COLOR[1]), 8)
 
             cv.line(corected_frame, (int(width/2), height), (int(right_line_x_pos), height-detecting_height), (0, 0, 255), 8)
-            cv.line(corected_frame, (int(right_line_x_pos), height-detecting_height), (int(right_line_x_pos), height), (AVAILABLE_COLOR[1] if right_found else UNAVAILABLE_COLOR[0]), 8)
+            cv.line(corected_frame, (int(right_line_x_pos), height-detecting_height), (int(right_line_x_pos), height), (AVAILABLE_COLOR[0] if right_found else AVAILABLE_COLOR[1]), 8)
 
-            cv.line(displayed_frame, (int(lane_center), height-car_hood), (int(distance_center + np.tan(lane_keeping_angle)*(car_hood + detection_distance)/3), int(height-car_hood-detection_distance/2)), AVAILABLE_COLOR[1] if lane_keeping else UNAVAILABLE_COLOR[0], 8)
+            cv.line(displayed_frame, (int(lane_center), height-car_hood), (int(distance_center + np.tan(lane_keeping_angle)*(car_hood + detection_distance)/3), int(height-car_hood-detection_distance/2)), AVAILABLE_COLOR[0] if lane_keeping else UNAVAILABLE_COLOR[0], 10)
             
             """
             drawing 2 small vertical lines on the bottom of the screen (grey if the line is not found, white if it is found, blue if it is predicted)
@@ -280,6 +280,25 @@ def main():
                 cv.line(displayed_frame, (lane_center+50, height-50), (lane_center+50, height-150), AVAILABLE_COLOR[1], 6)
             else:
                 cv.line(displayed_frame, (lane_center+50, height-50), (lane_center+50, height-150), AVAILABLE_COLOR[0] if right_found else UNAVAILABLE_COLOR[0], 6)
+
+            cv.putText(displayed_frame, "Lane Keeping Only", (int(width/2)-75, 20), cv.FONT_HERSHEY_SIMPLEX, 0.75, (0, 0, 0), 5)
+            cv.putText(displayed_frame, "Lane Keeping Only", (int(width/2)-75, 20), cv.FONT_HERSHEY_SIMPLEX, 0.75, (255, 255, 255), 2)
+
+
+            """
+            add legend for the vertical lines' colors (grey if the line is not found, white if it is found, blue if it is predicted)
+            """
+            cv.putText(displayed_frame, "color legend:", (10, height-110), cv.FONT_HERSHEY_SIMPLEX, 0.75, (0, 0, 0), 5)
+            cv.putText(displayed_frame, "color legend:", (10, height-110), cv.FONT_HERSHEY_SIMPLEX, 0.75, (255, 255, 255), 2)
+
+            cv.putText(displayed_frame, "- when grey: line is not found", (25, height-80), cv.FONT_HERSHEY_SIMPLEX, 0.75, (0, 0, 0), 5)
+            cv.putText(displayed_frame, "- when grey: line is not found", (25, height-80), cv.FONT_HERSHEY_SIMPLEX, 0.75, UNAVAILABLE_COLOR[0], 2)
+
+            cv.putText(displayed_frame, "- when white: line is found", (25, height-50), cv.FONT_HERSHEY_SIMPLEX, 0.75, (0, 0, 0), 5)
+            cv.putText(displayed_frame, "- when white: line is found", (25, height-50), cv.FONT_HERSHEY_SIMPLEX, 0.75, AVAILABLE_COLOR[0], 2)
+
+            cv.putText(displayed_frame, "- when blue: line is predicted", (25, height-20), cv.FONT_HERSHEY_SIMPLEX, 0.75, (0, 0, 0), 5)
+            cv.putText(displayed_frame, "- when blue: line is predicted", (25, height-20), cv.FONT_HERSHEY_SIMPLEX, 0.75, AVAILABLE_COLOR[1], 2)
                 
 
 
