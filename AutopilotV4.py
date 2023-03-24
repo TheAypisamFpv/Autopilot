@@ -12,11 +12,11 @@ height = 1080
 width = 1920
 
 
-lane_center = int(width/2) + 0  # + offset
+lane_center = int(width/2) + 15  # + offset
 car_hood = 230
 lane_width = 1100
 detection_distance = 250
-distance_center = lane_center + 10  # + offset
+distance_center = lane_center +5   # + offset
 distance_width = 150
 
 upper_left = [int(distance_center - distance_width/2),
@@ -195,7 +195,7 @@ def main():
             """
             lane_position = ((left_line_x_pos + right_line_x_pos + width/2) / 3)
             lane_keeping_angle = np.arctan((lane_position - width/2) / height)
-            lane_keeping_angle = (lane_keeping_angle + lane_keeping_angle_prev*5) / 6
+            lane_keeping_angle = (lane_keeping_angle + lane_keeping_angle_prev*10) / 11
             lane_keeping_angle_prev = lane_keeping_angle
 
             """
@@ -243,20 +243,48 @@ def main():
             lane keeping (using lane position and the angle from the bottom center)
             and display a line on the screen
             """
-            cv.line(displayed_frame, (int(width/2), height), (int(width/2 + np.tan(lane_keeping_angle)*height), height-300), (0,0,0), 12)
+            cv.line(displayed_frame, (int(lane_center), height-car_hood), (int(distance_center + np.tan(lane_keeping_angle)*(car_hood + detection_distance)/3), int(height-car_hood-detection_distance/2)), (0,0,0), 12)
 
 
             """their foreground"""
-            cv.line(corected_frame, (int(width/2), height), (int(left_line_x_pos), height-detecting_height), (0, 255, 0), 6)
-            cv.line(corected_frame, (int(left_line_x_pos), height-detecting_height), (int(left_line_x_pos), height), (AVAILABLE_COLOR[1] if left_found else UNAVAILABLE_COLOR[0]), 6)
+            cv.line(corected_frame, (int(width/2), height), (int(left_line_x_pos), height-detecting_height), (0, 255, 0), 8)
+            cv.line(corected_frame, (int(left_line_x_pos), height-detecting_height), (int(left_line_x_pos), height), (AVAILABLE_COLOR[1] if left_found else UNAVAILABLE_COLOR[0]), 8)
 
-            cv.line(corected_frame, (int(width/2), height), (int(right_line_x_pos), height-detecting_height), (0, 0, 255), 6)
-            cv.line(corected_frame, (int(right_line_x_pos), height-detecting_height), (int(right_line_x_pos), height), (AVAILABLE_COLOR[1] if right_found else UNAVAILABLE_COLOR[0]), 6)
+            cv.line(corected_frame, (int(width/2), height), (int(right_line_x_pos), height-detecting_height), (0, 0, 255), 8)
+            cv.line(corected_frame, (int(right_line_x_pos), height-detecting_height), (int(right_line_x_pos), height), (AVAILABLE_COLOR[1] if right_found else UNAVAILABLE_COLOR[0]), 8)
 
-            cv.line(displayed_frame, (int(width/2), height), (int(width/2 + np.tan(lane_keeping_angle)*height), height-300), AVAILABLE_COLOR[1] if lane_keeping else UNAVAILABLE_COLOR[0], 6)
+            cv.line(displayed_frame, (int(lane_center), height-car_hood), (int(distance_center + np.tan(lane_keeping_angle)*(car_hood + detection_distance)/3), int(height-car_hood-detection_distance/2)), AVAILABLE_COLOR[1] if lane_keeping else UNAVAILABLE_COLOR[0], 8)
             
+            """
+            drawing 2 small vertical lines on the bottom of the screen (grey if the line is not found, white if it is found, blue if it is predicted)
+            """
+            if left_line_x_pos == predicted_left_line_x_pos:
+                left_line_predicted = True
+            else:
+                left_line_predicted = False
+            
+            if right_line_x_pos == predicted_right_line_x_pos:
+                right_line_predicted = True
+            else:
+                right_line_predicted = False
+
+            cv.line(displayed_frame, (lane_center-50, height-50), (lane_center-50, height-150), (0,0,0), 9)
+            cv.line(displayed_frame, (lane_center+50, height-50), (lane_center+50, height-150), (0,0,0), 9)
+
+            if left_line_predicted and not right_line_predicted:
+                cv.line(displayed_frame, (lane_center-50, height-50), (lane_center-50, height-150), AVAILABLE_COLOR[1], 6)
+            else:
+                cv.line(displayed_frame, (lane_center-50, height-50), (lane_center-50, height-150), AVAILABLE_COLOR[0] if left_found else UNAVAILABLE_COLOR[0], 6)
+
+            if right_line_predicted and not left_line_predicted:
+                cv.line(displayed_frame, (lane_center+50, height-50), (lane_center+50, height-150), AVAILABLE_COLOR[1], 6)
+            else:
+                cv.line(displayed_frame, (lane_center+50, height-50), (lane_center+50, height-150), AVAILABLE_COLOR[0] if right_found else UNAVAILABLE_COLOR[0], 6)
+                
 
 
+
+            # cv.line(corected_frame, (int(width/2), height), (int(width/2), 0), (255, 255, 255), 6)
 
 
             steering_angle = np.degrees(lane_keeping_angle)
