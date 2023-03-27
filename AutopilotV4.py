@@ -13,11 +13,11 @@ width = 1920
 
 
 lane_center = int(width/2) + 15  # + offset
-car_hood = 200
-lane_width = 1100
-detection_distance = 250
+car_hood = 180
+lane_width = width
+detection_distance = 260
 distance_center = lane_center +5   # + offset
-distance_width = 150
+distance_width = 190
 
 upper_left = [int(distance_center - distance_width/2), int(height - car_hood - detection_distance)]
 upper_right = [int(distance_center + distance_width/2),int(height - car_hood - detection_distance)]
@@ -139,7 +139,7 @@ def main():
     """
     Video here
     """
-    cap = cv.VideoCapture('Test drive\\24 03 2023\\24_03_2023_02.MP4')
+    cap = cv.VideoCapture('Test drive\\27 03 2023\\5.MP4')
 
     while (cap.isOpened()):
         ret, frame = cap.read()
@@ -156,12 +156,12 @@ def main():
                 """
                 incertitude_threshold = 8
 
-                left_line_x_pos = (true_left_line_x_pos + left_line_x_pos_prev*15) / 16
+                left_line_x_pos = (true_left_line_x_pos + left_line_x_pos_prev*10) / 11
                 left_line_incertitude = np.abs(left_line_x_pos - left_line_x_pos_prev)
                 left_line_incertitude = (left_line_incertitude + left_line_incertitude_prev*5) / 6
                 left_found = False if left_line_incertitude > incertitude_threshold else left_found
 
-                right_line_x_pos = (true_right_line_x_pos + right_line_x_pos_prev*15) / 16
+                right_line_x_pos = (true_right_line_x_pos + right_line_x_pos_prev*10) / 11
                 right_line_incertitude = np.abs(right_line_x_pos - right_line_x_pos_prev)
                 right_line_incertitude = (right_line_incertitude + right_line_incertitude_prev*5) / 6
                 right_found = False if right_line_incertitude > incertitude_threshold else right_found
@@ -215,7 +215,7 @@ def main():
                 """
                 lane_position = ((left_line_x_pos + right_line_x_pos + width/2) / 3)
                 lane_keeping_angle = np.arctan((lane_position - width/2) / height)
-                lane_keeping_angle = (lane_keeping_angle + lane_keeping_angle_prev*10) / 11
+                lane_keeping_angle = (lane_keeping_angle + lane_keeping_angle_prev*5) / 6
                 lane_keeping_angle_prev = lane_keeping_angle
 
                 """
@@ -320,13 +320,17 @@ def main():
                 cv.putText(displayed_frame, "- when blue: line is predicted", (25, height-20), cv.FONT_HERSHEY_SIMPLEX, 0.75, (0, 0, 0), 5)
                 cv.putText(displayed_frame, "- when blue: line is predicted", (25, height-20), cv.FONT_HERSHEY_SIMPLEX, 0.75, AVAILABLE_COLOR[1], 2)
                     
-
+                """draw the lines connected to the 4 points used for the perspective transform"""
+                cv.line(displayed_frame, upper_left, upper_right, (0, 0, 255), 4)
+                cv.line(displayed_frame, upper_right, lower_right, (0, 0, 255), 4)
+                cv.line(displayed_frame, lower_right, lower_left, (0, 0, 255), 4)
+                cv.line(displayed_frame, lower_left, upper_left, (0, 0, 255), 4)
 
 
                 # cv.line(corected_frame, (int(width/2), height), (int(width/2), 0), (255, 255, 255), 6)
 
 
-                steering_angle = np.degrees(lane_keeping_angle)
+                steering_angle = np.degrees(lane_keeping_angle) *10
 
                 """
                 steering wheel (rotate with the steering angle) (made with 1 circle and 2 lines)
