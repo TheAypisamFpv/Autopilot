@@ -13,11 +13,22 @@ width = 1920
 
 
 lane_center = int(width/2) + 15  # + offset
-car_hood = 230
-lane_width = 1100
-detection_distance = 250
+car_hood = 200
+lane_width = 1700
+detection_distance = 275
 distance_center = lane_center +5   # + offset
-distance_width = 150
+distance_width = 125
+
+
+upper_left = [int(distance_center - distance_width/2), int(height - car_hood - detection_distance)]
+upper_right = [int(distance_center + distance_width/2), int(height - car_hood - detection_distance)]
+
+lower_left = [int(lane_center - lane_width/2), int(height-car_hood)]
+lower_right = [int(lane_center + lane_width/2), int(height-car_hood)]
+
+pts1 = np.float32([upper_left, lower_left, upper_right, lower_right])
+pts2 = np.float32([[0, 0], [0, height], [width, 0], [width, height]])
+
 
 
 
@@ -39,18 +50,6 @@ def pad_img_to_fit_bbox(img, x1, x2, y1, y2):
 
 
 def detect_lane_width(frame, displayed_frame):
-
-    upper_left = [int(distance_center - distance_width/2), int(height - car_hood - detection_distance)]
-    upper_right = [int(distance_center + distance_width/2), int(height - car_hood - detection_distance)]
-
-    lower_left = [int(lane_center - lane_width/2), int(height-car_hood)]
-    lower_right = [int(lane_center + lane_width/2), int(height-car_hood)]
-
-    pts1 = np.float32([upper_left, lower_left, upper_right, lower_right])
-    pts2 = np.float32([[0, 0], [0, height], [width, 0], [width, height]])
-
-
-
 
     """bird's eye view of display_frame"""
     M = cv.getPerspectiveTransform(pts1, pts2)
@@ -86,7 +85,7 @@ def detect_lane_width(frame, displayed_frame):
     right_line_x_pos = (width/2 + lane_width/2)
     right_found = False
 
-    detecting_height = 75
+    detecting_height = 50
 
     """project a line from the center of the car to the left and right"""
     for pixel in range(100,int(width/2)):
@@ -98,22 +97,12 @@ def detect_lane_width(frame, displayed_frame):
             right_found = True
 
         if left_found and right_found:
-            break
-
-    """detect car hood"""
-    car_hood_found = False
-    for pixel in range(10, int(height/2)):
-        if masked_frame[height-pixel, int(width/2-detecting_height):int(width/2+detecting_height)].any() > 0 and not car_hood_found:
-            car_hood = pixel
-            car_hood_found = True
-            break
-    
-    
+            break    
 
     """calculate the true lane width"""
     true_lane_width = int(right_line_x_pos - left_line_x_pos)
 
-    return displayed_frame, canny_frame, left_line_x_pos, left_found, right_line_x_pos, right_found, true_lane_width, car_hood
+    return displayed_frame, masked_frame, left_line_x_pos, left_found, right_line_x_pos, right_found, true_lane_width, car_hood
 
 def main():
     """
@@ -141,13 +130,13 @@ def main():
     """
     Video here
     """
-    cap = cv.VideoCapture('Test_drive\GPO_24_03_2023_02.MP4')
+    cap = cv.VideoCapture('Test_drive\\27 03 2023\\GP044224.MP4')
 
     while (cap.isOpened()):
         ret, frame = cap.read()
         frame_id = cap.get(1)
 
-        if frame_id % 2 or True:
+        if frame_id % 2:
             if ret:
                 displayed_frame = frame.copy()
                 corected_frame, masked_frame, true_left_line_x_pos, left_found, true_right_line_x_pos, right_found, true_lane_width, car_hood = detect_lane_width(frame, displayed_frame)
@@ -322,6 +311,11 @@ def main():
                 cv.putText(displayed_frame, "- when blue: line is predicted", (25, height-20), cv.FONT_HERSHEY_SIMPLEX, 0.75, (0, 0, 0), 5)
                 cv.putText(displayed_frame, "- when blue: line is predicted", (25, height-20), cv.FONT_HERSHEY_SIMPLEX, 0.75, AVAILABLE_COLOR[1], 2)
                     
+                """draw horizontal line at carhood, and all 4 dots for the transformation"""
+                cv.line(displayed_frame, upper_left, upper_right, (0, 0, 255), 3)
+                cv.line(displayed_frame, upper_right, lower_right, (0, 0, 255), 3)
+                cv.line(displayed_frame, lower_right, lower_left, (0, 0, 255), 3)
+                cv.line(displayed_frame, lower_left, upper_left, (0, 0, 255), 3)
 
 
 
