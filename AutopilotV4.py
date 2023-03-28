@@ -14,7 +14,7 @@ width = 1920
 
 
 lane_center = int(width/2) + 15  # + offset
-car_hood = 160
+car_hood = 150
 lane_width = width
 detection_distance = 260
 distance_center = lane_center +5   # + offset
@@ -165,7 +165,7 @@ def main():
     """
     Video here
     """
-    cap = cv.VideoCapture('Test drive\\28 03 2023\\3.MP4')
+    cap = cv.VideoCapture('Test drive\\27 03 2023\\6.MP4')
     video_fps = 30#cap.get(cv.CAP_PROP_FPS)
 
     fps = float(f"{float(video_fps):.2f}")
