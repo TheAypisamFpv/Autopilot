@@ -160,12 +160,13 @@ def main():
     lane_keeping_angle_prev = 0
     last_lane_keeping_angle = 0
 
-    
+    setting = ''
+
     """
     Video here
     """
-    cap = cv.VideoCapture('Test drive\\28 03 2023\\2.MP4')
-    video_fps = cap.get(cv.CAP_PROP_FPS)
+    cap = cv.VideoCapture('Test drive\\28 03 2023\\3.MP4')
+    video_fps = 30#cap.get(cv.CAP_PROP_FPS)
 
     fps = float(f"{float(video_fps):.2f}")
 
@@ -256,6 +257,29 @@ def main():
                     lane_keeping_angle = last_lane_keeping_angle
                     lane_keeping = False
 
+                if left_line_predicted and not right_line_predicted:
+                    left_color = AVAILABLE_COLOR[1]
+                elif left_found:
+                    left_color = AVAILABLE_COLOR[0]
+                else:
+                    left_color = UNAVAILABLE_COLOR[0]
+
+                if right_line_predicted and not left_line_predicted:
+                    right_color = AVAILABLE_COLOR[1]
+                elif right_found:
+                    right_color = AVAILABLE_COLOR[0]
+                else:
+                    right_color = UNAVAILABLE_COLOR[0]
+
+
+                if lane_keeping:
+                    lane_color = AVAILABLE_COLOR[0]
+                else:
+                    lane_color = UNAVAILABLE_COLOR[0]
+
+
+
+
                 print(f"left_line_incertitude: {int(left_line_incertitude): =04d}  |  right_line_incertitude: {int(right_line_incertitude): =04d}  |  lane width: {true_lane_width: =04d}  |  average lane width: {int(average_lane_width): =04d}  |  left_found: {int(left_found)}  |  right_found: {int(right_found)}  |  frame_id: {int(frame_id): =05d}  |  fps = {fps:.2f}")
 
                 """
@@ -272,90 +296,68 @@ def main():
                 """
                 draw the lines
                 """
-                """their background"""
+
+                """
+                drawing the line representing the lane
+                their background
+                """
                 detecting_height = 50
-                """
-                lane detection
-                """
                 cv.line(corected_frame, (int(left_line_x_pos), height-detecting_height), (int(left_line_x_pos), height), (0, 0, 0), 12)
                 cv.line(corected_frame, (int(width/2), height), (int(left_line_x_pos), height-detecting_height), (0, 0, 0), 12)
                 cv.line(corected_frame, (int(right_line_x_pos), height-detecting_height), (int(right_line_x_pos), height), (0, 0, 0), 12)
                 cv.line(corected_frame, (int(width/2), height), (int(right_line_x_pos), height-detecting_height), (0, 0, 0), 12)
 
+                # """
+                # draw the lines connected to the 4 points used for the perspective transform
+                # """
+                # cv.line(displayed_frame, upper_left, upper_right, (0, 0, 255), 2)
+                # cv.line(displayed_frame, upper_right, lower_right, (0, 0, 255), 2)
+                # cv.line(displayed_frame, lower_right, lower_left, (0, 0, 255), 2)
+                # cv.line(displayed_frame, lower_left, upper_left, (0, 0, 255), 2)
 
 
-                """
-                draw the lines connected to the 4 points used for the perspective transform
-                """
-                cv.line(displayed_frame, upper_left, upper_right, (0, 0, 255), 4)
-                cv.line(displayed_frame, upper_right, lower_right, (0, 0, 255), 4)
-                cv.line(displayed_frame, lower_right, lower_left, (0, 0, 255), 4)
-                cv.line(displayed_frame, lower_left, upper_left, (0, 0, 255), 4)
 
                 """
                 draw the lines on displayed_frame taking into account the perspective change
 
                 map the x position from (0 to width) to (lower_left to lower_right)
                 """
-                if left_line_predicted and not right_line_predicted:
-                    left_color = AVAILABLE_COLOR[1]
-                elif left_found:
-                    left_color = AVAILABLE_COLOR[0]
-                else:
-                    left_color = UNAVAILABLE_COLOR[0]
-
-                if right_line_predicted and not left_line_predicted:
-                    right_color = AVAILABLE_COLOR[1]
-                elif right_found:
-                    right_color = AVAILABLE_COLOR[0]
-                else:
-                    right_color = UNAVAILABLE_COLOR[0]
-                    
-
-
-
                 displayed_frame_left_lower_line_x_pos = map(left_line_x_pos, 0, width, lower_left[0], lower_right[0])
-                displayed_frame_right_lower_line_x_pos = map(left_line_x_pos+width/2, 0, width, lower_left[0], lower_right[0])
+                displayed_frame_right_lower_line_x_pos = map(right_line_x_pos, 0, width, lower_left[0], lower_right[0])
 
                 displayed_frame_left_high_line_x_pos = map(left_line_x_pos, 0, width, upper_left[0], upper_right[0])
-                displayed_frame_right_high_line_x_pos = map(left_line_x_pos+width/2, 0, width, upper_left[0], upper_right[0])
+                displayed_frame_right_high_line_x_pos = map(right_line_x_pos, 0, width, upper_left[0], upper_right[0])
+
+                displayed_frame_center_lower_line_x_pos = map(lane_position, 0, width, lower_left[0], lower_right[0])
+                displayed_frame_center_high_line_x_pos = map(lane_position, 0, width, upper_left[0], upper_right[0])
 
                 """their background"""
-                cv.line(displayed_frame, (int(displayed_frame_left_lower_line_x_pos), height-car_hood), (int(displayed_frame_left_high_line_x_pos), height-car_hood-detection_distance), (0, 0, 0), 14)
-                cv.line(displayed_frame, (int(displayed_frame_right_lower_line_x_pos), height-car_hood), (int(displayed_frame_right_high_line_x_pos), height-car_hood-detection_distance), (0, 0, 0), 14)
+                cv.line(displayed_frame, (int(displayed_frame_left_lower_line_x_pos), height-car_hood), (int(displayed_frame_left_high_line_x_pos), height-car_hood-detection_distance), (0, 0, 0), 7)
+                cv.line(displayed_frame, (int(displayed_frame_right_lower_line_x_pos), height-car_hood), (int(displayed_frame_right_high_line_x_pos), height-car_hood-detection_distance), (0, 0, 0), 7)
+                cv.line(displayed_frame, (int(displayed_frame_center_lower_line_x_pos), height-car_hood), (int(displayed_frame_center_high_line_x_pos), height-car_hood-detection_distance), (0, 0, 0), 5)
 
                 """their foreground"""
-                cv.line(displayed_frame, (int(displayed_frame_left_lower_line_x_pos), height-car_hood), (int(displayed_frame_left_high_line_x_pos), height-car_hood-detection_distance), (left_color), 8)
-                cv.line(displayed_frame, (int(displayed_frame_right_lower_line_x_pos), height-car_hood), (int(displayed_frame_right_high_line_x_pos), height-car_hood-detection_distance), (right_color), 8)
+                cv.line(displayed_frame, (int(displayed_frame_left_lower_line_x_pos), height-car_hood), (int(displayed_frame_left_high_line_x_pos), height-car_hood-detection_distance), left_color, 3)
+                cv.line(displayed_frame, (int(displayed_frame_right_lower_line_x_pos), height-car_hood), (int(displayed_frame_right_high_line_x_pos), height-car_hood-detection_distance), right_color, 3)
+                cv.line(displayed_frame, (int(displayed_frame_center_lower_line_x_pos), height-car_hood), (int(displayed_frame_center_high_line_x_pos), height-car_hood-detection_distance), lane_color, 2)
 
 
 
-                """
-                lane keeping (using lane position and the angle from the bottom center)
-                and display a line on the screen
-                """
-                cv.line(displayed_frame, (int(lane_center), height-car_hood), (int(distance_center + np.tan(lane_keeping_angle)*(car_hood + detection_distance)/3), int(height-car_hood-detection_distance/2)), (0,0,0), 14)
+                # """
+                # lane keeping (using lane position and the angle from the bottom center)
+                # and display a line on the screen
+                # """
+                # cv.line(displayed_frame, (int(lane_center), height-car_hood), (int(distance_center + np.tan(lane_keeping_angle)*(car_hood + detection_distance)/3), int(height-car_hood-detection_distance/2)), (0,0,0), 14)
+                # cv.line(displayed_frame, (int(lane_center), height-car_hood), (int(distance_center + np.tan(lane_keeping_angle)*(car_hood + detection_distance)/3), int(height-car_hood-detection_distance/2)), lane_color, 10)
 
 
                 """their foreground"""
                 cv.line(corected_frame, (int(width/2), height), (int(left_line_x_pos), height-detecting_height), (0, 255, 0), 8)
-                cv.line(corected_frame, (int(left_line_x_pos), height-detecting_height), (int(left_line_x_pos), height), (AVAILABLE_COLOR[0] if left_found else AVAILABLE_COLOR[1]), 8)
+                cv.line(corected_frame, (int(left_line_x_pos), height-detecting_height), (int(left_line_x_pos), height), left_color, 8)
 
                 cv.line(corected_frame, (int(width/2), height), (int(right_line_x_pos), height-detecting_height), (0, 0, 255), 8)
-                cv.line(corected_frame, (int(right_line_x_pos), height-detecting_height), (int(right_line_x_pos), height), (AVAILABLE_COLOR[0] if right_found else AVAILABLE_COLOR[1]), 8)
+                cv.line(corected_frame, (int(right_line_x_pos), height-detecting_height), (int(right_line_x_pos), height), right_color, 8)
 
-                cv.line(displayed_frame, (int(lane_center), height-car_hood), (int(distance_center + np.tan(lane_keeping_angle)*(car_hood + detection_distance)/3), int(height-car_hood-detection_distance/2)), AVAILABLE_COLOR[0] if lane_keeping else UNAVAILABLE_COLOR[0], 10)
-                
-                """
-                drawing 2 small vertical lines on the bottom of the screen (grey if the line is not found, white if it is found, blue if it is predicted)
-                """
-
-                cv.line(displayed_frame, (lane_center-50, height-50), (lane_center-50, height-150), (0,0,0), 9)
-                cv.line(displayed_frame, (lane_center+50, height-50), (lane_center+50, height-150), (0,0,0), 9)
-
-                cv.line(displayed_frame, (lane_center-50, height-50), (lane_center-50, height-150), left_color, 6)
-
-                cv.line(displayed_frame, (lane_center+50, height-50), (lane_center+50, height-150), right_color, 6)
 
                 cv.putText(displayed_frame, "Lane Keeping Only", (int(width/2)-75, 20), cv.FONT_HERSHEY_SIMPLEX, 0.75, (0, 0, 0), 5)
                 cv.putText(displayed_frame, "Lane Keeping Only", (int(width/2)-75, 20), cv.FONT_HERSHEY_SIMPLEX, 0.75, (255, 255, 255), 2)
@@ -364,17 +366,17 @@ def main():
                 """
                 add legend for the vertical lines' colors (grey if the line is not found, white if it is found, blue if it is predicted)
                 """
-                cv.putText(displayed_frame, "color legend:", (10, height-110), cv.FONT_HERSHEY_SIMPLEX, 0.75, (0, 0, 0), 5)
-                cv.putText(displayed_frame, "color legend:", (10, height-110), cv.FONT_HERSHEY_SIMPLEX, 0.75, (255, 255, 255), 2)
+                cv.putText(displayed_frame, "Color legend:", (10, height-110), cv.FONT_HERSHEY_SIMPLEX, 0.85, (0, 0, 0), 6)
+                cv.putText(displayed_frame, "Color legend:", (10, height-110), cv.FONT_HERSHEY_SIMPLEX, 0.85, (255, 255, 255), 2)
 
-                cv.putText(displayed_frame, "- when grey: line is not found", (25, height-80), cv.FONT_HERSHEY_SIMPLEX, 0.75, (0, 0, 0), 5)
-                cv.putText(displayed_frame, "- when grey: line is not found", (25, height-80), cv.FONT_HERSHEY_SIMPLEX, 0.75, UNAVAILABLE_COLOR[0], 2)
-
-                cv.putText(displayed_frame, "- when white: line is found", (25, height-50), cv.FONT_HERSHEY_SIMPLEX, 0.75, (0, 0, 0), 5)
-                cv.putText(displayed_frame, "- when white: line is found", (25, height-50), cv.FONT_HERSHEY_SIMPLEX, 0.75, AVAILABLE_COLOR[0], 2)
-
-                cv.putText(displayed_frame, "- when blue: line is predicted", (25, height-20), cv.FONT_HERSHEY_SIMPLEX, 0.75, (0, 0, 0), 5)
-                cv.putText(displayed_frame, "- when blue: line is predicted", (25, height-20), cv.FONT_HERSHEY_SIMPLEX, 0.75, AVAILABLE_COLOR[1], 2)
+                cv.putText(displayed_frame, "- Grey : The line is not found", (25, height-80), cv.FONT_HERSHEY_SIMPLEX, 0.85, (0, 0, 0), 6)
+                cv.putText(displayed_frame, "- Grey : The line is not found", (25, height-80), cv.FONT_HERSHEY_SIMPLEX, 0.85, UNAVAILABLE_COLOR[0], 2)
+ 
+                cv.putText(displayed_frame, "- White: The line is found", (25, height-50), cv.FONT_HERSHEY_SIMPLEX, 0.85, (0, 0, 0), 6)
+                cv.putText(displayed_frame, "- White: The line is found", (25, height-50), cv.FONT_HERSHEY_SIMPLEX, 0.85, AVAILABLE_COLOR[0], 2)
+ 
+                cv.putText(displayed_frame, "- Blue : The line is predicted", (25, height-20), cv.FONT_HERSHEY_SIMPLEX, 0.85, (0, 0, 0), 6)
+                cv.putText(displayed_frame, "- Blue : The line is predicted", (25, height-20), cv.FONT_HERSHEY_SIMPLEX, 0.85, AVAILABLE_COLOR[1], 2)
                     
         
 
@@ -397,21 +399,7 @@ def main():
                 
                 """
 
-                end_time = time.time()
-
-                cal_time = end_time - start_time
-                """
-                make th FPS constant at video_fps
-                """
-                setting = ""
-                if cal_time < 1/video_fps:
-                    time.sleep(1/video_fps - cal_time)
-                    cal_time = 1/video_fps
-                    setting = f"(caped at {float(video_fps):.2f} by video settings)"
-                    
-
-                fps = 1/cal_time
-
+                
                 """
                 show FPS
                 """
@@ -428,6 +416,20 @@ def main():
                 cv.imshow('displayed_frame', displayed_frame)
                 cv.imshow('corected_frame', corected_frame)
                 cv.imshow('masked_frame', masked_frame)
+
+                end_time = time.time()
+
+                cal_time = end_time - start_time
+                """
+                make th FPS constant at video_fps
+                """
+                setting = ""
+                if cal_time < 1/video_fps:
+                    time.sleep(1/video_fps - cal_time)
+                    cal_time = 1/video_fps
+                    setting = f"(caped at {float(video_fps):.2f} by video settings)"
+
+                fps = 1/cal_time
 
 
                 if cv.waitKey(1) == 27:
