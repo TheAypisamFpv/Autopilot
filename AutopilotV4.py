@@ -3,9 +3,11 @@ import numpy as np
 import math
 import time
 
-
-AVAILABLE_COLOR = (255, 255, 255), (255, 0, 72)
+""" Blue Green Red """
+AVAILABLE_COLOR = (255, 255, 255), (232, 39, 33)
 UNAVAILABLE_COLOR = (100, 100, 100), (0, 0, 0)
+ALERTE_DEPARTURE_COLOR = (39, 33, 232), (0, 0, 0)
+
 autopilot_available = False
 autopilot_available_color = UNAVAILABLE_COLOR
 
@@ -14,9 +16,9 @@ width = 1920
 
 
 lane_center = int(width/2) + 15  # + offset
-car_hood = 150
+car_hood = 180
 lane_width = width
-detection_distance = 260
+detection_distance = 230
 distance_center = lane_center +5   # + offset
 distance_width = 190
 
@@ -114,7 +116,7 @@ def detect_lane_width(frame, displayed_frame):
     detecting_height = 50
 
 
-    center_detecting_ignore = 225
+    center_detecting_ignore = 200
 
     """
     project a line from the center of the car to the left and right
@@ -135,6 +137,30 @@ def detect_lane_width(frame, displayed_frame):
     
 
     return displayed_frame, canny_frame, left_line_x_pos, left_found, right_line_x_pos, right_found, car_hood
+
+
+def lane_departure(left_line_x_pos, left_found, right_line_x_pos, right_found):
+    """
+    detect lane departure
+    """
+    left_line = [int(lane_center - left_line_x_pos), left_found]
+    right_line = [int(right_line_x_pos - lane_center), right_found]
+
+    left_line_departure = 0
+    right_line_departure = 0
+
+    left_line_departure_threshold = 230
+    right_line_departure_threshold = 230
+
+    if left_line[0] < left_line_departure_threshold and left_line[1]:
+        left_line_departure = 1
+    
+    if right_line[0] < right_line_departure_threshold and right_line[1]:
+        right_line_departure = 1
+
+    return left_line_departure, right_line_departure
+
+
 
 def main():
     """
@@ -160,12 +186,20 @@ def main():
     lane_keeping_angle_prev = 0
     last_lane_keeping_angle = 0
 
+    left_color_prev = UNAVAILABLE_COLOR[0]
+    right_color_prev = UNAVAILABLE_COLOR[0]
+    lane_color_prev = UNAVAILABLE_COLOR[0]
+
+    steering_wheel_color_prev = UNAVAILABLE_COLOR[0]
+    steering_color_prev = UNAVAILABLE_COLOR[0]
+    autopilot_available = False
+
     setting = ''
 
     """
     Video here
     """
-    cap = cv.VideoCapture('Test drive\\27 03 2023\\6.MP4')
+    cap = cv.VideoCapture('Test drive\\29 03 2023\\3.MP4')
     video_fps = 30#cap.get(cv.CAP_PROP_FPS)
 
     fps = float(f"{float(video_fps):.2f}")
@@ -235,13 +269,30 @@ def main():
                 predicted_left_line_x_pos = np.clip(predicted_left_line_x_pos, 0, width/2 - center_threshold)
                 predicted_right_line_x_pos = np.clip(predicted_right_line_x_pos, width/2 + center_threshold, width)
 
+
+                """
+                check for lane departure
+                """
+                left_line_departure, right_line_departure = lane_departure(left_line_x_pos, (left_found or left_line_predicted), right_line_x_pos, (right_found or right_line_predicted))
+
+                if left_line_departure and right_line_departure:
+                    left_line_departure = 0
+                    right_line_departure = 0
+
+
+                lane_departure_amplifier = 1.1 if (left_line_departure or right_line_departure) else 1
+
+
+
                 """
                 determine the lane position
                 """
                 lane_position = ((left_line_x_pos + right_line_x_pos + width/2) / 3)
                 lane_keeping_angle = np.arctan((lane_position - width/2) / height)
-                lane_keeping_angle = (lane_keeping_angle + lane_keeping_angle_prev*5) / 6
+                lane_keeping_angle = ((lane_keeping_angle + lane_keeping_angle_prev*5) / 6) * lane_departure_amplifier
                 lane_keeping_angle_prev = lane_keeping_angle
+
+                
 
                 """
                 if none of the lines are found, use the last coherent angle
@@ -249,13 +300,12 @@ def main():
                 if left_found and right_found:
                     last_lane_keeping_angle = lane_keeping_angle
                     lane_keeping = True
-
                 elif left_found or right_found:
                     lane_keeping = True
-
                 elif not left_found and not right_found:
                     lane_keeping_angle = last_lane_keeping_angle
                     lane_keeping = False
+
 
                 if left_line_predicted and not right_line_predicted:
                     left_color = AVAILABLE_COLOR[1]
@@ -263,6 +313,10 @@ def main():
                     left_color = AVAILABLE_COLOR[0]
                 else:
                     left_color = UNAVAILABLE_COLOR[0]
+                if left_line_departure:
+                    left_color = ALERTE_DEPARTURE_COLOR[0]
+
+                
 
                 if right_line_predicted and not left_line_predicted:
                     right_color = AVAILABLE_COLOR[1]
@@ -270,6 +324,32 @@ def main():
                     right_color = AVAILABLE_COLOR[0]
                 else:
                     right_color = UNAVAILABLE_COLOR[0]
+                if right_line_departure:
+                    right_color = ALERTE_DEPARTURE_COLOR[0]
+
+                """
+                smooth left and right line color transition
+                """
+                b, g, r = left_color
+                pre_b, pre_g, pre_r = left_color_prev
+
+                b = int((b + pre_b*5) / 6)
+                g = int((g + pre_g*5) / 6)
+                r = int((r + pre_r*5) / 6)
+
+                left_color = (b, g, r)
+                left_color_prev = left_color
+
+                b, g, r = right_color
+                pre_b, pre_g, pre_r = right_color_prev
+                
+                b = int((b + pre_b*5) / 6)
+                g = int((g + pre_g*5) / 6)
+                r = int((r + pre_r*5) / 6)
+
+                right_color = (b, g, r)
+                right_color_prev = right_color
+
 
 
                 if lane_keeping:
@@ -277,10 +357,19 @@ def main():
                 else:
                     lane_color = UNAVAILABLE_COLOR[0]
 
+                b, g, r = lane_color
+                pre_b, pre_g, pre_r = lane_color_prev
 
+                b = int((b + pre_b*10) / 11)
+                g = int((g + pre_g*10) / 11)
+                r = int((r + pre_r*10) / 11)
 
+                lane_color = (b, g, r)
+                lane_color_prev = lane_color
 
-                print(f"left_line_incertitude: {int(left_line_incertitude): =04d}  |  right_line_incertitude: {int(right_line_incertitude): =04d}  |  lane width: {true_lane_width: =04d}  |  average lane width: {int(average_lane_width): =04d}  |  left_found: {int(left_found)}  |  right_found: {int(right_found)}  |  frame_id: {int(frame_id): =05d}  |  fps = {fps:.2f}")
+                
+
+                print(f"left_line_incertitude: {int(left_line_incertitude): =04d}  |  right_line_incertitude: {int(right_line_incertitude): =04d}  |  lane width: {true_lane_width: =04d}  |  average lane width: {int(average_lane_width): =04d}  |  left_found: {int(left_found)}  |  right_found: {int(right_found)}  |  Left_departure = {left_line_departure}  right_departure = {right_line_departure}  |  frame_id: {int(frame_id): =05d}  |  fps = {fps:.2f}")
 
                 """
                 draw the predicted lines
@@ -383,21 +472,58 @@ def main():
 
                 steering_angle = np.degrees(lane_keeping_angle)
 
+                if lane_color[0] >= 240:
+                    autopilot_available = True
+                elif lane_color[0] <= 130:
+                    autopilot_available = False
+
+
+                if autopilot_available:
+                    steering_wheel_color = AVAILABLE_COLOR[0]
+                    steering_color = AVAILABLE_COLOR[1]
+                else:
+                    steering_wheel_color = UNAVAILABLE_COLOR[0]
+                    steering_color = UNAVAILABLE_COLOR[1]
+
+                if left_line_departure or right_line_departure:
+                    steering_wheel_color = ALERTE_DEPARTURE_COLOR[0]
+                    steering_color = AVAILABLE_COLOR[0]
+
+                b, g, r = steering_wheel_color
+                pre_b, pre_g, pre_r = steering_wheel_color_prev
+
+                b = int((b + pre_b*5) / 6)
+                g = int((g + pre_g*5) / 6)
+                r = int((r + pre_r*5) / 6)
+
+                steering_wheel_color = (b, g, r)
+                steering_wheel_color_prev = (b, g, r)
+
+                b, g, r = steering_color
+                pre_b, pre_g, pre_r = steering_color_prev
+
+                b = int((b + pre_b*5) / 6)
+                g = int((g + pre_g*5) / 6)
+                r = int((r + pre_r*5) / 6)
+
+                steering_color = (b, g, r)
+                steering_color_prev = (b, g, r)
+
+
+
                 """
                 steering wheel (rotate with the steering angle) (made with 1 circle and 2 lines)
                 """
-                steering_wheel_center = (int(width/2.5), int(75))
-                cv.circle(displayed_frame, steering_wheel_center, 70, autopilot_available_color[1], -1)
-                cv.circle(displayed_frame, steering_wheel_center, 50, autopilot_available_color[0], 10)
+                steering_wheel_size = 60
+                steering_wheel_center = (int(width/2.5), int(90))
+                cv.circle(displayed_frame, steering_wheel_center, steering_wheel_size + 25, steering_color, -1)
+                cv.circle(displayed_frame, steering_wheel_center, steering_wheel_size+int(steering_wheel_size/10), steering_wheel_color, int(steering_wheel_size/7))
+                cv.circle(displayed_frame, (int(steering_wheel_center[0] - (steering_wheel_size/6.5)*math.sin(math.radians(steering_angle))), int(steering_wheel_center[1] + (steering_wheel_size/6.5)*math.cos(math.radians(steering_angle)))), int(steering_wheel_size/2.2), steering_wheel_color, -1)
                 
-                cv.line(displayed_frame, steering_wheel_center, (int(steering_wheel_center[0]-50*math.sin(math.radians(steering_angle))), int(steering_wheel_center[1]+50*math.cos(math.radians(steering_angle)))), autopilot_available_color[0], 10)
-                steering_wheel_x_lenght = int(50*math.cos(math.radians(steering_angle)))
-                steering_wheel_y_lenght = int(50*math.sin(math.radians(steering_angle)))
-                cv.line(displayed_frame, (steering_wheel_center[0]-steering_wheel_x_lenght, steering_wheel_center[1]-steering_wheel_y_lenght), (steering_wheel_center[0]+steering_wheel_x_lenght, steering_wheel_center[1]+steering_wheel_y_lenght), autopilot_available_color[0], 10)
-
-                """
-                
-                """
+                cv.line(displayed_frame, steering_wheel_center, (int(steering_wheel_center[0]-steering_wheel_size*math.sin(math.radians(steering_angle))), int(steering_wheel_center[1]+steering_wheel_size*math.cos(math.radians(steering_angle)))), steering_wheel_color, int(steering_wheel_size/5))
+                steering_wheel_x_lenght = int(steering_wheel_size*math.cos(math.radians(steering_angle)))
+                steering_wheel_y_lenght = int(steering_wheel_size*math.sin(math.radians(steering_angle)))
+                cv.line(displayed_frame, (steering_wheel_center[0]-steering_wheel_x_lenght, steering_wheel_center[1]-steering_wheel_y_lenght), (steering_wheel_center[0]+steering_wheel_x_lenght, steering_wheel_center[1]+steering_wheel_y_lenght), steering_wheel_color, int(steering_wheel_size/5))
 
                 
                 """
@@ -424,10 +550,10 @@ def main():
                 make th FPS constant at video_fps
                 """
                 setting = ""
-                if cal_time < 1/video_fps:
-                    time.sleep(1/video_fps - cal_time)
-                    cal_time = 1/video_fps
-                    setting = f"(caped at {float(video_fps):.2f} by video settings)"
+                # if cal_time < 1/video_fps:
+                #     time.sleep(1/video_fps - cal_time)
+                #     cal_time = 1/video_fps
+                #     setting = f"(caped at {float(video_fps):.2f} by video settings)"
 
                 fps = 1/cal_time
 
