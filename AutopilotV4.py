@@ -130,7 +130,7 @@ def detect_lane_width(frame, displayed_frame):
             right_found = True
 
         if left_found and right_found:
-            break
+            break    
 
     
 
@@ -208,7 +208,7 @@ def main():
         ret, frame = cap.read()
         frame_id = cap.get(1)
 
-        if frame_id % 2 or True:
+        if frame_id % 2:
             if ret:
                 start_time = time.time()
                 displayed_frame = frame.copy()
