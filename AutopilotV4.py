@@ -75,10 +75,10 @@ def detect_lane_width(frame, displayed_frame):
     # """
     # modifiy contrast and brightness
     # """
-    alpha = 1.5
-    beta = -90
-    corected_frame = cv.convertScaleAbs(frame, alpha=alpha, beta=beta)
-    corected_frame = cv.cvtColor(corected_frame, cv.COLOR_BGR2GRAY)
+    # alpha = 1.0
+    # beta = 0
+    # corected_frame = cv.convertScaleAbs(frame, alpha=alpha, beta=beta)
+    corected_frame = cv.cvtColor(frame, cv.COLOR_BGR2GRAY)
 
     """
     blur the frame
