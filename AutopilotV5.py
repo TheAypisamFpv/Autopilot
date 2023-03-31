@@ -702,7 +702,7 @@ def main():
                 cv.putText(displayed_frame, "- Blue : The line is predicted", (25, height-10 ), cv.FONT_HERSHEY_SIMPLEX, 0.4, AVAILABLE_COLOR[1]  , 1)
                     
 
-                steering_angle = np.degrees(lane_keeping_angle) + np.degrees(lane_angle)*-5
+                steering_angle = np.degrees(lane_keeping_angle) + np.degrees(lane_angle)*-7
 
                 print(f"{steering_angle:.2f} = {np.degrees(lane_keeping_angle):.2f} + {(np.degrees(lane_angle)*-5):.2f}")
 
