@@ -35,11 +35,11 @@ pts1 = np.float32([upper_left, lower_left, upper_right, lower_right])
 pts2 = np.float32([[0, 0], [0, height], [width, 0], [width, height]])
 
 cv.namedWindow('Trackbars')
-default_canny_low  = 170
+default_canny_low  = 200
 default_canny_high = 225
 
-# cv.createTrackbar('Canny_low' , 'Trackbars', default_canny_low , 255, lambda x: None)
-# cv.createTrackbar('Canny_high', 'Trackbars', default_canny_high, 255, lambda x: None)
+cv.createTrackbar('Canny_low' , 'Trackbars', default_canny_low , 255, lambda x: None)
+cv.createTrackbar('Canny_high', 'Trackbars', default_canny_high, 255, lambda x: None)
 
 # cv.createTrackbar("Box_height", "Trackbars", 25, 100, lambda x: None)
 # cv.createTrackbar("Box_width", "Trackbars", 100, 200, lambda x: None)
@@ -88,9 +88,11 @@ def detect_lane_width(frame, displayed_frame, prev_left_line_x_pos, prev_right_l
 
     ## modifiy contrast and brightness
     gray_frame = cv.cvtColor(frame, cv.COLOR_BGR2GRAY)
+    # white_frame = cv.threshold(gray_frame, 0, 255, cv.THRESH_BINARY + cv.THRESH_OTSU)[1]
     alpha = 1
     beta = -50
     corected_frame = cv.convertScaleAbs(gray_frame, alpha=alpha, beta=beta)
+    # corected_frame = cv.bitwise_and(gray_frame, white_frame)
 
     ## blur the frame
     blur_frame = cv.GaussianBlur(corected_frame, (51, 51), 0)
@@ -107,6 +109,9 @@ def detect_lane_width(frame, displayed_frame, prev_left_line_x_pos, prev_right_l
     canny_low  = default_canny_low
     canny_high = default_canny_high
 
+    canny_low  = cv.getTrackbarPos('Canny_low' , 'Trackbars')
+    canny_high = cv.getTrackbarPos('Canny_high', 'Trackbars')
+
     canny_frame = cv.Canny(combined_frame, canny_low, canny_high)
     canny_frame = cv.warpPerspective(canny_frame, M, (width, height))
     canny_frame = cv.dilate(canny_frame, None, iterations=1)
@@ -115,7 +120,7 @@ def detect_lane_width(frame, displayed_frame, prev_left_line_x_pos, prev_right_l
     canny_frame = cv.add(canny_frame, canny_blur_frame)
 
     ## convert to black and white
-    bw_canny_frame = cv.threshold(canny_frame, 7, 255, cv.THRESH_BINARY)[1]
+    bw_canny_frame = cv.threshold(canny_frame, 0, 255, cv.THRESH_BINARY)[1]
 
     ## detect start of the lines
     lower_left_found = False
@@ -246,6 +251,7 @@ def detect_lane_width(frame, displayed_frame, prev_left_line_x_pos, prev_right_l
     upper_left_found  = True if (len(left_boxs_x)  > 1) and (left_boxs_y[ -1] < height/3) else False
     upper_right_found = True if (len(right_boxs_x) > 1) and (right_boxs_y[-1] < height/3) else False
 
+
     return displayed_frame, bw_canny_frame, left_line_lower_x_pos, left_line_upper_x_pos, lower_left_found, upper_left_found, right_line_lower_x_pos, right_line_upper_x_pos, lower_right_found, upper_right_found
 
 
@@ -347,6 +353,7 @@ def main():
     lane_color_prev = UNAVAILABLE_COLOR[0]
 
     steering_wheel_color_prev = UNAVAILABLE_COLOR[0]
+    steering_color            = UNAVAILABLE_COLOR[0]
     steering_color_prev       = UNAVAILABLE_COLOR[0]
     steering_angle = 0
 
@@ -360,7 +367,7 @@ def main():
 
     ## Video here
     # cap = cv.VideoCapture(1)
-    cap = cv.VideoCapture('Test drive\\04 04 2023\\4.mp4')
+    cap = cv.VideoCapture('Test drive\\29 03 2023\\2.mp4')
     
 
     while (cap.isOpened()):
@@ -372,6 +379,10 @@ def main():
                 start_time = time.time()
                 frame = cv.resize(frame, (width, height))
                 displayed_frame = frame.copy()
+                
+                # frame[:, :, 0] = 0
+                # frame[:, :, 1] = 0
+
                 corected_frame, bw_canny_frameed_frame, true_left_line_x_pos, left_line_upper_x_pos, lower_left_found, upper_left_found, true_right_line_x_pos, right_line_upper_x_pos, lower_right_found, upper_right_found = detect_lane_width(frame, displayed_frame, left_line_lower_x_pos_prev, right_line_lower_x_pos_prev)
 
                 video_fps = cv.getTrackbarPos('Target FPS', 'Trackbars')  # cap.get(cv.CAP_PROP_FPS)
@@ -674,35 +685,41 @@ def main():
                 displayed_frame_left_upper_line_x_pos    = map(left_line_upper_x_pos , 0, width, upper_left[0], upper_right[0])
                 displayed_frame_right_upper_line_x_pos   = map(right_line_upper_x_pos, 0, width, upper_left[0], upper_right[0])
 
+                ## mask of the lane according to the left and right lines
+                lane_msk = np.zeros_like(displayed_frame)
+                cv.fillPoly(lane_msk, np.array([[(int(displayed_frame_left_lower_line_x_pos  ), height-car_hood), (int(displayed_frame_left_upper_line_x_pos  ), height-car_hood-detection_distance), (int(displayed_frame_right_upper_line_x_pos ), height-car_hood-detection_distance), (int(displayed_frame_right_lower_line_x_pos ), height-car_hood)]], dtype=np.int32), steering_color)
+                displayed_frame = cv.addWeighted(displayed_frame, 1, lane_msk, 0.5, 0)
+
+
                 displayed_frame_center_lower_line_x_pos = map(lane_lower_position   , 0, width, lower_left[0], lower_right[0])
                 displayed_frame_center_upper_line_x_pos = map(int((left_line_upper_x_pos + right_line_upper_x_pos)/2)   , 0, width, upper_left[0], upper_right[0])
 
                 ## their background
-                cv.line(displayed_frame, (int(displayed_frame_left_lower_line_x_pos  ), height-car_hood), (int(displayed_frame_left_upper_line_x_pos  ), height-car_hood-detection_distance), (0, 0, 0), 7)
-                cv.line(displayed_frame, (int(displayed_frame_right_lower_line_x_pos ), height-car_hood), (int(displayed_frame_right_upper_line_x_pos ), height-car_hood-detection_distance), (0, 0, 0), 7)
+                cv.line(displayed_frame, (int(displayed_frame_left_lower_line_x_pos  ), height-car_hood), (int(displayed_frame_left_upper_line_x_pos  ), height-car_hood-detection_distance), (0, 0, 0), 3)
+                cv.line(displayed_frame, (int(displayed_frame_right_lower_line_x_pos ), height-car_hood), (int(displayed_frame_right_upper_line_x_pos ), height-car_hood-detection_distance), (0, 0, 0), 3)
                 
-                cv.line(displayed_frame, (int(displayed_frame_center_lower_line_x_pos), height-car_hood), (int(displayed_frame_center_upper_line_x_pos), height-car_hood-detection_distance), (0, 0, 0), 5)
+                # cv.line(displayed_frame, (int(displayed_frame_center_lower_line_x_pos), height-car_hood), (int(displayed_frame_center_upper_line_x_pos), height-car_hood-detection_distance), (0, 0, 0), 3)
 
 
-                cv.circle(displayed_frame, (int(displayed_frame_left_lower_line_x_pos ) , height-car_hood                   ), 7, (0, 0, 0), -1)
-                cv.circle(displayed_frame, (int(displayed_frame_right_lower_line_x_pos) , height-car_hood                   ), 7, (0, 0, 0), -1)
+                # cv.circle(displayed_frame, (int(displayed_frame_left_lower_line_x_pos ) , height-car_hood                   ), 7, (0, 0, 0), -1)
+                # cv.circle(displayed_frame, (int(displayed_frame_right_lower_line_x_pos) , height-car_hood                   ), 7, (0, 0, 0), -1)
 
-                cv.circle(displayed_frame, (int(displayed_frame_left_upper_line_x_pos ) , height-car_hood-detection_distance), 7, (0, 0, 0), -1)
-                cv.circle(displayed_frame, (int(displayed_frame_right_upper_line_x_pos) , height-car_hood-detection_distance), 7, (0, 0, 0), -1)
-
-
-                ## their foreground
-                cv.line(displayed_frame, (int(displayed_frame_left_lower_line_x_pos  ), height-car_hood), (int(displayed_frame_left_upper_line_x_pos  ), height-car_hood-detection_distance), left_lower_color , 3)
-                cv.line(displayed_frame, (int(displayed_frame_right_lower_line_x_pos ), height-car_hood), (int(displayed_frame_right_upper_line_x_pos ), height-car_hood-detection_distance), right_lower_color, 3)
-
-                cv.line(displayed_frame, (int(displayed_frame_center_lower_line_x_pos), height-car_hood), (int(displayed_frame_center_upper_line_x_pos), height-car_hood-detection_distance), lane_color , 2)
+                # cv.circle(displayed_frame, (int(displayed_frame_left_upper_line_x_pos ) , height-car_hood-detection_distance), 7, (0, 0, 0), -1)
+                # cv.circle(displayed_frame, (int(displayed_frame_right_upper_line_x_pos) , height-car_hood-detection_distance), 7, (0, 0, 0), -1)
 
 
-                cv.circle(displayed_frame, (int(displayed_frame_left_lower_line_x_pos ) , height-car_hood                   ), 5, left_lower_color  , -1)
-                cv.circle(displayed_frame, (int(displayed_frame_right_lower_line_x_pos) , height-car_hood                   ), 5, right_lower_color , -1)
+                # ## their foreground
+                cv.line(displayed_frame, (int(displayed_frame_left_lower_line_x_pos  ), height-car_hood), (int(displayed_frame_left_upper_line_x_pos  ), height-car_hood-detection_distance), left_lower_color , 2)
+                cv.line(displayed_frame, (int(displayed_frame_right_lower_line_x_pos ), height-car_hood), (int(displayed_frame_right_upper_line_x_pos ), height-car_hood-detection_distance), right_lower_color, 2)
 
-                cv.circle(displayed_frame, (int(displayed_frame_left_upper_line_x_pos ) , height-car_hood-detection_distance), 5, left_upper_color  , -1)
-                cv.circle(displayed_frame, (int(displayed_frame_right_upper_line_x_pos) , height-car_hood-detection_distance), 5, right_upper_color , -1)
+                cv.line(displayed_frame, (int(displayed_frame_center_lower_line_x_pos), height-car_hood), (int(displayed_frame_center_upper_line_x_pos), height-car_hood-detection_distance), lane_color , 1)
+
+
+                # cv.circle(displayed_frame, (int(displayed_frame_left_lower_line_x_pos ) , height-car_hood                   ), 5, left_lower_color  , -1)
+                # cv.circle(displayed_frame, (int(displayed_frame_right_lower_line_x_pos) , height-car_hood                   ), 5, right_lower_color , -1)
+
+                # cv.circle(displayed_frame, (int(displayed_frame_left_upper_line_x_pos ) , height-car_hood-detection_distance), 5, left_upper_color  , -1)
+                # cv.circle(displayed_frame, (int(displayed_frame_right_upper_line_x_pos) , height-car_hood-detection_distance), 5, right_upper_color , -1)
 
 
 
@@ -729,29 +746,22 @@ def main():
                 cv.line(corected_frame, (int(right_line_lower_x_pos) , height), (int(right_line_upper_x_pos), 0), right_lower_color, 3)
 
 
-
-
-
-                cv.putText(displayed_frame, "Lane Keeping Only", (int(width/2)-75, 20), cv.FONT_HERSHEY_SIMPLEX, 0.5, (0  , 0  , 0  ), 3)
-                cv.putText(displayed_frame, "Lane Keeping Only", (int(width/2)-75, 20), cv.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
-
-
                 
                 ## add legend for the vertical lines' colors (grey if the line is not found, white if it is found, blue if it is predicted)
-                cv.putText(displayed_frame, "Color legend:"                 , (10, height-90),  cv.FONT_HERSHEY_SIMPLEX, 0.45, (0   , 0   , 0   ), 3)
-                cv.putText(displayed_frame, "Color legend:"                 , (10, height-90),  cv.FONT_HERSHEY_SIMPLEX, 0.45, AVAILABLE_COLOR[0], 1)
+                # cv.putText(displayed_frame, "Color legend:"                 , (10, height-90),  cv.FONT_HERSHEY_SIMPLEX, 0.45, (0   , 0   , 0   ), 3)
+                # cv.putText(displayed_frame, "Color legend:"                 , (10, height-90),  cv.FONT_HERSHEY_SIMPLEX, 0.45, AVAILABLE_COLOR[0], 1)
 
-                cv.putText(displayed_frame, "- Grey : The line is not found", (25, height-70 ), cv.FONT_HERSHEY_SIMPLEX, 0.45, (0   , 0   , 0   )  , 3)
-                cv.putText(displayed_frame, "- Grey : The line is not found", (25, height-70 ), cv.FONT_HERSHEY_SIMPLEX, 0.45, UNAVAILABLE_COLOR[0], 1)
+                # cv.putText(displayed_frame, "- Grey : The line is not found", (25, height-70 ), cv.FONT_HERSHEY_SIMPLEX, 0.45, (0   , 0   , 0   )  , 3)
+                # cv.putText(displayed_frame, "- Grey : The line is not found", (25, height-70 ), cv.FONT_HERSHEY_SIMPLEX, 0.45, UNAVAILABLE_COLOR[0], 1)
 
-                cv.putText(displayed_frame, "- White: The line is found"    , (25, height-50 ), cv.FONT_HERSHEY_SIMPLEX, 0.45, (0   , 0   , 0   ), 3)
-                cv.putText(displayed_frame, "- White: The line is found"    , (25, height-50 ), cv.FONT_HERSHEY_SIMPLEX, 0.45, AVAILABLE_COLOR[0], 1)
+                # cv.putText(displayed_frame, "- White: The line is found"    , (25, height-50 ), cv.FONT_HERSHEY_SIMPLEX, 0.45, (0   , 0   , 0   ), 3)
+                # cv.putText(displayed_frame, "- White: The line is found"    , (25, height-50 ), cv.FONT_HERSHEY_SIMPLEX, 0.45, AVAILABLE_COLOR[0], 1)
 
-                cv.putText(displayed_frame, "- Blue : The line is predicted", (25, height-30 ), cv.FONT_HERSHEY_SIMPLEX, 0.45, (0   , 0   , 0   ), 3)
-                cv.putText(displayed_frame, "- Blue : The line is predicted", (25, height-30 ), cv.FONT_HERSHEY_SIMPLEX, 0.45, AVAILABLE_COLOR[1], 1)
+                # cv.putText(displayed_frame, "- Blue : The line is predicted", (25, height-30 ), cv.FONT_HERSHEY_SIMPLEX, 0.45, (0   , 0   , 0   ), 3)
+                # cv.putText(displayed_frame, "- Blue : The line is predicted", (25, height-30 ), cv.FONT_HERSHEY_SIMPLEX, 0.45, AVAILABLE_COLOR[1], 1)
 
-                cv.putText(displayed_frame, "- Red  : Lane departure"       , (25, height-10 ), cv.FONT_HERSHEY_SIMPLEX, 0.45, (0   , 0   , 0   )       , 3)
-                cv.putText(displayed_frame, "- Red  : Lane departure"       , (25, height-10 ), cv.FONT_HERSHEY_SIMPLEX, 0.45, ALERTE_DEPARTURE_COLOR[0], 1)
+                # cv.putText(displayed_frame, "- Red  : Lane departure"       , (25, height-10 ), cv.FONT_HERSHEY_SIMPLEX, 0.45, (0   , 0   , 0   )       , 3)
+                # cv.putText(displayed_frame, "- Red  : Lane departure"       , (25, height-10 ), cv.FONT_HERSHEY_SIMPLEX, 0.45, ALERTE_DEPARTURE_COLOR[0], 1)
                     
 
                 wheel_angle =( np.degrees(lane_keeping_angle)*0.5 + np.degrees(lane_angle)*-1)
@@ -778,8 +788,8 @@ def main():
                     steering_color = UNAVAILABLE_COLOR[1]
 
                 if left_line_departure or right_line_departure:
-                    steering_wheel_color = ALERTE_DEPARTURE_COLOR[0]
-                    steering_color = AVAILABLE_COLOR[0]
+                    steering_color = ALERTE_DEPARTURE_COLOR[0]
+                    steering_wheel_color = AVAILABLE_COLOR[0]
 
                 b    , g    , r     = steering_wheel_color
                 pre_b, pre_g, pre_r = steering_wheel_color_prev
