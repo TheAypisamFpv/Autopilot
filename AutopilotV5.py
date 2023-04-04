@@ -358,8 +358,8 @@ def main():
 
 
     ## Video here
-    # cap = cv.VideoCapture(1)
-    cap = cv.VideoCapture('Test drive\\31 03 2023\\2.mp4')
+    cap = cv.VideoCapture(1)
+    # cap = cv.VideoCapture('Test drive\\31 03 2023\\2.mp4')
     
 
     while (cap.isOpened()):
@@ -753,9 +753,12 @@ def main():
                 cv.putText(displayed_frame, "- Red  : Lane departure"       , (25, height-10 ), cv.FONT_HERSHEY_SIMPLEX, 0.45, ALERTE_DEPARTURE_COLOR[0], 1)
                     
 
-                wheel_angle =( np.degrees(lane_keeping_angle)*0.25 + np.degrees(lane_angle)*-1)
+                wheel_angle =( np.degrees(lane_keeping_angle)*0.1 + np.degrees(lane_angle)*-1)
 
-                steering_angle, joystick_pos = simulation(wheel_angle)
+                steering_angle = controller_input.wheel_angle_to_steering_angle(wheel_angle)
+
+                joystick_pos = controller_input.steering_angle_to_joystick_pos(steering_angle)
+
                 print(f"wheel angle: {int(wheel_angle): 3d}°  -  steering wheel angle: {int(steering_angle): =4d}°   |   joystick position: {' ' if (joystick_pos > 0) else '-'} {abs(joystick_pos)/32767:.2f}")
 
 
