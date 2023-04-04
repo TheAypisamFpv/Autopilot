@@ -63,7 +63,7 @@ def map(value, In_Min, In_Max, Out_Min, Out_Max) -> float:
 
 
 
-def imcrop(img, bbox) -> np.ndarray[int, np.dtype]:
+def imcrop(img, bbox):
     x1, y1, x2, y2 = bbox
     if x1 < 0 or y1 < 0 or x2 > img.shape[1] or y2 > img.shape[0]:
         img, x1, x2, y1, y2 = pad_img_to_fit_bbox(img, x1, x2, y1, y2)
@@ -89,7 +89,7 @@ def detect_lane_width(frame, displayed_frame, prev_left_line_x_pos, prev_right_l
     ## modifiy contrast and brightness
     gray_frame = cv.cvtColor(frame, cv.COLOR_BGR2GRAY)
     alpha = 1
-    beta = -10
+    beta = -50
     corected_frame = cv.convertScaleAbs(gray_frame, alpha=alpha, beta=beta)
 
     ## blur the frame
@@ -238,6 +238,7 @@ def detect_lane_width(frame, displayed_frame, prev_left_line_x_pos, prev_right_l
 
     left_line_lower_x_pos  =  left_boxs_x[ 0]
     right_line_lower_x_pos = right_boxs_x[ 0]
+    
 
     left_line_upper_x_pos  =  left_boxs_x[-1]
     right_line_upper_x_pos = right_boxs_x[-1]
@@ -358,8 +359,8 @@ def main():
 
 
     ## Video here
-    cap = cv.VideoCapture(1)
-    # cap = cv.VideoCapture('Test drive\\31 03 2023\\2.mp4')
+    # cap = cv.VideoCapture(1)
+    cap = cv.VideoCapture('Test drive\\04 04 2023\\4.mp4')
     
 
     while (cap.isOpened()):
@@ -753,9 +754,9 @@ def main():
                 cv.putText(displayed_frame, "- Red  : Lane departure"       , (25, height-10 ), cv.FONT_HERSHEY_SIMPLEX, 0.45, ALERTE_DEPARTURE_COLOR[0], 1)
                     
 
-                wheel_angle =( np.degrees(lane_keeping_angle)*0.1 + np.degrees(lane_angle)*-1)
+                wheel_angle =( np.degrees(lane_keeping_angle)*0.5 + np.degrees(lane_angle)*-1)
 
-                steering_angle = controller_input.wheel_angle_to_steering_angle(wheel_angle)
+                steering_angle = map(wheel_angle, -25, 25, -30, 30)
 
                 joystick_pos = controller_input.steering_angle_to_joystick_pos(steering_angle)
 

@@ -1,4 +1,4 @@
-import pyvjoy
+# import pyvjoy
 import time
 
 """------------------|USE beamngpy|------------------"""
@@ -8,10 +8,10 @@ steering_ration = 5#to 1
 wheel_full_rotation = steering_full_roation / steering_ration
 
 # create a joystick object
-j = pyvjoy.VJoyDevice(rID=1)
+# j = pyvjoy.VJoyDevice(rID=1)
 
-x_axis = pyvjoy.HID_USAGE_X
-y_axis = pyvjoy.HID_USAGE_Y
+# x_axis = pyvjoy.HID_USAGE_X
+# y_axis = pyvjoy.HID_USAGE_Y
 
 
 def wheel_angle_to_steering_angle(angle:float):
@@ -35,7 +35,7 @@ def update_joystick(angle:float):
     """
     steering_wheel_angle = wheel_angle_to_steering_angle(angle)
     x_pos = steering_angle_to_joystick_pos(steering_wheel_angle)
-    j.set_axis(x_axis, x_pos)
-    j.update()
+    # j.set_axis(x_axis, x_pos)
+    # j.update()
     return x_pos
 
