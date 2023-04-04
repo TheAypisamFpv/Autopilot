@@ -3,6 +3,7 @@ import numpy as np
 import math
 import time
 import matplotlib.pyplot as plt
+import controller_input
 
 
 """ Blue Green Red """
@@ -357,7 +358,8 @@ def main():
 
 
     ## Video here
-    cap = cv.VideoCapture('Test drive\\31 03 2023\\2.MP4')
+    # cap = cv.VideoCapture(1)
+    cap = cv.VideoCapture('Test drive\\31 03 2023\\2.mp4')
     
 
     while (cap.isOpened()):
@@ -617,7 +619,7 @@ def main():
 
 
                 ## print for both lane if they are detected or predicted
-                print(f"steering_angle: {int(steering_angle): =03d}°     ||     left: lower: {int(width/2-left_line_lower_x_pos): =03d}  ({int(lower_left_found)})   upper: {int(width/2-left_line_upper_x_pos): =03d}  ({int(upper_left_found)})    |   right: lower: {int(right_line_lower_x_pos-width/2): =03d}  ({int(lower_right_found)})   upper: {int(right_line_upper_x_pos-width/2): =03d}  ({int(upper_right_found)})     ||     lane width: lower: {average_lower_lane_width:.2f}  upper: {average_upper_lane_width:.2f}")
+                # print(f"steering_angle: {int(steering_angle): =03d}°     ||     left: lower: {int(width/2-left_line_lower_x_pos): =03d}  ({int(lower_left_found)})   upper: {int(width/2-left_line_upper_x_pos): =03d}  ({int(upper_left_found)})    |   right: lower: {int(right_line_lower_x_pos-width/2): =03d}  ({int(lower_right_found)})   upper: {int(right_line_upper_x_pos-width/2): =03d}  ({int(upper_right_found)})     ||     lane width: lower: {average_lower_lane_width:.2f}  upper: {average_upper_lane_width:.2f}")
                 
                 ## draw the predicted lines
                 detecting_height = 20
@@ -751,9 +753,11 @@ def main():
                 cv.putText(displayed_frame, "- Red  : Lane departure"       , (25, height-10 ), cv.FONT_HERSHEY_SIMPLEX, 0.45, ALERTE_DEPARTURE_COLOR[0], 1)
                     
 
-                steering_angle = np.degrees(lane_keeping_angle)*0.5 + np.degrees(lane_angle)*-3
+                wheel_angle =( np.degrees(lane_keeping_angle)*0.25 + np.degrees(lane_angle)*-1)
 
-                # print(f"{steering_angle:.2f} = {np.degrees(lane_keeping_angle):.2f} + {(np.degrees(lane_angle)*-5):.2f}")
+                steering_angle, joystick_pos = simulation(wheel_angle)
+                print(f"wheel angle: {int(wheel_angle): 3d}°  -  steering wheel angle: {int(steering_angle): =4d}°   |   joystick position: {' ' if (joystick_pos > 0) else '-'} {abs(joystick_pos)/32767:.2f}")
+
 
                 if lane_color[0] >= 240:
                     autopilot_available = True
@@ -824,6 +828,8 @@ def main():
                 cv.imshow('corected_frame'      , corected_frame        )
                 cv.imshow('bw_canny_frame_frame', bw_canny_frameed_frame)
 
+                
+
                 end_time = time.time()
 
                 cal_time = end_time - start_time
@@ -845,6 +851,10 @@ def main():
                 if cv.waitKey(1) == 27:
                     break
 
+
+def simulation(angle:float):
+    return controller_input.update_joystick(angle)
+    
 
 
 main()
