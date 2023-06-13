@@ -20,11 +20,11 @@ width  = 720
 
 
 lane_center        = int(width/2) + 0 # + offset
-car_hood           = 75
-lower_lane_width   = width-150
+car_hood           = 100
+lower_lane_width   = width-50
 detection_distance = 100
 distance_center    = lane_center +5 # + offset
-distance_width     = 100
+distance_width     = 150
 
 upper_left  = [int(distance_center - distance_width/2),int(height - car_hood - detection_distance)]
 upper_right = [int(distance_center + distance_width/2),int(height - car_hood - detection_distance)]
@@ -367,8 +367,8 @@ def main():
 
 
   ## Video here
-  cap = cv.VideoCapture(0)
-  cap = cv.VideoCapture('Test drive\\29 03 2023\\2.mp4')
+  # cap = cv.VideoCapture(0)
+  cap = cv.VideoCapture('Test drive\\13 06 2023\\1.MP4')
   
 
   while (cap.isOpened()):
