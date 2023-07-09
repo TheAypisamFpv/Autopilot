@@ -751,20 +751,20 @@ def main():
         cv.line(corected_frame, (int(right_line_lower_x_pos) , height), (int(right_line_upper_x_pos), 0), right_lower_color, 3)
 
 
-                ## calculate angle in degrees of the line bewteen the displayed_frame_center_lower_line_x_pos and displayed_frame_center_upper_line_x_pos
-                center_upper_x_pos = (left_line_upper_x_pos + right_line_upper_x_pos)/2
-                center_lower_x_pos = (left_line_lower_x_pos + right_line_lower_x_pos)/2
+        ## calculate angle in degrees of the line bewteen the displayed_frame_center_lower_line_x_pos and displayed_frame_center_upper_line_x_pos
+        center_upper_x_pos = (left_line_upper_x_pos + right_line_upper_x_pos)/2
+        center_lower_x_pos = (left_line_lower_x_pos + right_line_lower_x_pos)/2
 
-                cv.line(corected_frame, (int(center_lower_x_pos), height), (int(center_upper_x_pos), 0), (0, 0, 0), 3)
+        cv.line(corected_frame, (int(center_lower_x_pos), height), (int(center_upper_x_pos), 0), (0, 0, 0), 3)
 
-                print(center_upper_x_pos, center_lower_x_pos)
-                
-                lane_angle_true = np.arctan((center_upper_x_pos - center_lower_x_pos)/height)
-                steering_angle_true = lane_angle_true
-                # print(steering_angle_true)
+        print(center_upper_x_pos, center_lower_x_pos)
+        
+        lane_angle_true = np.arctan((center_upper_x_pos - center_lower_x_pos)/height)
+        steering_angle_true = lane_angle_true
+        # print(steering_angle_true)
 
-                cv.line(displayed_frame, (int(lane_center), height-car_hood), (int(lane_center + np.tan(lane_angle_true)*(car_hood + detection_distance)/3), int(height-car_hood-detection_distance*np.cos(lane_angle_true))), (0,0,0), 10)
-                cv.line(displayed_frame, (int(lane_center), height-car_hood), (int(lane_center + np.tan(lane_angle_true)*(car_hood + detection_distance)/3), int(height-car_hood-detection_distance*np.cos(lane_angle_true))), lane_color, 5)
+        cv.line(displayed_frame, (int(lane_center), height-car_hood), (int(lane_center + np.tan(lane_angle_true)*(car_hood + detection_distance)/3), int(height-car_hood-detection_distance*np.cos(lane_angle_true))), (0,0,0), 10)
+        cv.line(displayed_frame, (int(lane_center), height-car_hood), (int(lane_center + np.tan(lane_angle_true)*(car_hood + detection_distance)/3), int(height-car_hood-detection_distance*np.cos(lane_angle_true))), lane_color, 5)
 
         
         ## add legend for the vertical lines' colors (grey if the line is not found, white if it is found, blue if it is predicted)
