@@ -359,6 +359,10 @@ def main():
 
     autopilot_available = False
 
+    """----------------------------------Other----------------------------------"""
+    lane_keeping_I = 0
+    error_prev = 0
+    
     setting = ''
     fps = 60
     prev_fps = fps
@@ -500,7 +504,7 @@ def main():
                     right_line_departure = 0
 
 
-                lane_departure_amplifier = 1.1 if (left_line_departure or right_line_departure) else 1
+                lane_departure_amplifier = 1.2 if (left_line_departure or right_line_departure) else 1
 
 
 
@@ -523,7 +527,24 @@ def main():
                     lane_keeping_angle = last_lane_keeping_angle
                     lane_keeping = False
 
-              
+
+
+                ## lane keeping PID
+                Kp = 0.5
+                Ki = 0.01
+                Kd = 0.1
+                error = (left_line_lower_x_pos + right_line_lower_x_pos)/2 - width/2
+                
+                lane_keeping_P = error*Kp
+                lane_keeping_I += error*Ki
+                lane_keeping_D = (error - error_prev)*Kd
+
+                pid_correction = (lane_keeping_P + lane_keeping_I + lane_keeping_D)*0.01
+
+                print(f"error = {error:.5f}, P = {lane_keeping_P:.5f}, I = {lane_keeping_I:.5f}, D = {lane_keeping_D:.5f}, correction = {pid_correction:.5f}")
+                error_prev = error
+
+
 
 
                 if lower_left_line_predicted and not lower_right_line_predicted:
@@ -733,8 +754,6 @@ def main():
                 center_lower_x_pos = (left_line_lower_x_pos + right_line_lower_x_pos)/2
 
                 cv.line(corected_frame, (int(center_lower_x_pos), height), (int(center_upper_x_pos), 0), (0, 0, 0), 3)
-
-                print(center_upper_x_pos, center_lower_x_pos)
                 
                 lane_angle_true = np.arctan((center_upper_x_pos - center_lower_x_pos)/height)
                 steering_angle_true = lane_angle_true
