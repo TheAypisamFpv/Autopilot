@@ -504,7 +504,7 @@ def main():
                     right_line_departure = 0
 
 
-                lane_departure_amplifier = 1.2 if (left_line_departure or right_line_departure) else 1
+                lane_departure_amplifier = 1.1 if (left_line_departure or right_line_departure) else 1
 
 
 
