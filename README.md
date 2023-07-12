@@ -16,28 +16,25 @@
 </p>
 
 
-
-
-### Images
-<p align="center"> Autopilot active.
+<p align="left"> Capable of lane centering, lane following and lane derparture warning. The autopilot is able to activate as long as it detect 1 line, the 2nd will be predicted using the lane width that is the average if the distance between the left and right line when both are detected and stable in time (during a straight line for exemple)
     <br> 
 </p>
+
+## Images
+### Autopilot active
+
 <p align="center"> 
   <a href="" rel="noopener">
  <img width=873px height=473px src="https://github.com/TheAypisamFpv/Autopilot/blob/master/images/autopilotV6%20active%203.png" alt="Autopilot active"></a>
 </p>
 
-<p align="center"> Autopilot inactive.
-    <br> 
-</p>
+### Autopilot inactive
 <p align="center"> 
   <a href="" rel="noopener">
  <img width=873px height=473px src="https://github.com/TheAypisamFpv/Autopilot/blob/master/images/autopilotV6%20inactive.png" alt="Autopilot inactive"></a>
 </p>
 
-<p align="center"> lane departure warning.
-    <br> 
-</p>
+### Lane departure warning
 
 <p align="center"> 
   <a href="" rel="noopener">
