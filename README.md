@@ -1,14 +1,5 @@
 <h3 align="center">Autopilot</h3>
 
-<div align="center">
-
-[![Status](https://img.shields.io/badge/status-active-success.svg)]()
-[![GitHub Issues](https://img.shields.io/github/issues/kylelobo/The-Documentation-Compendium.svg)](https://github.com/kylelobo/The-Documentation-Compendium/issues)
-[![GitHub Pull Requests](https://img.shields.io/github/issues-pr/kylelobo/The-Documentation-Compendium.svg)](https://github.com/kylelobo/The-Documentation-Compendium/pulls)
-[![License](https://img.shields.io/badge/license-MIT-blue.svg)](/LICENSE)
-
-</div>
-
 ---
 
 <p align="center"> Autopilot project, no AI involved for now.
@@ -16,7 +7,8 @@
 </p>
 
 
-<p align="left"> Capable of lane centering, lane following and lane derparture warning. The autopilot is able to activate as long as it detect 1 line, the 2nd will be predicted using the lane width that is the average if the distance between the left and right line when both are detected and stable in time (during a straight line for exemple)
+<p align="left"> Capable of lane centering, lane following, and lane departure warning, the autopilot is able to activate as long as it detects one line. The second line will be predicted using the lane width, which is the average distance between the left and right lines when both are detected and stable over time (e.g., during a straight line). This can be seen in the "Lane departure warning" image, where the right line is highlighted in red but not detected. By using the position of the left line, the system determines that the left line is too far to the left and triggers a lane departure warning.
+A line is considered not detected when it is not visible or not stable enough to be trusted.
     <br> 
 </p>
 
