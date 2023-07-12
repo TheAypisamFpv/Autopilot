@@ -30,17 +30,16 @@ A line is considered not detected when it is not visible or not stable enough to
  <img width=853px height=468px src="https://github.com/TheAypisamFpv/Autopilot/blob/master/images/V6/autopilotV6%20lane%20prediction.png" alt="Lane prediction"></a>
 </p>
 
+### Lane departure warning
+<p align="center"> 
+  <a href="" rel="noopener">
+ <img width=853px height=468px src="https://github.com/TheAypisamFpv/Autopilot/blob/master/images/V6/autopilotV6%20lane%20departure.png" alt="lane departure warning"></a>
+</p>
+
 ### Autopilot unavailable
 <p align="center"> 
   <a href="" rel="noopener">
  <img width=853px height=468px src="https://github.com/TheAypisamFpv/Autopilot/blob/master/images/V6/autopilotV6%20unavailable.png" alt="Autopilot unavailable"></a>
-</p>
-
-### Lane departure warning
-
-<p align="center"> 
-  <a href="" rel="noopener">
- <img width=853px height=468px src="https://github.com/TheAypisamFpv/Autopilot/blob/master/images/V6/autopilotV6%20lane%20departure.png" alt="lane departure warning"></a>
 </p>
 
 ---
