@@ -1,3 +1,4 @@
+from calendar import c
 import cv2 as cv
 import numpy as np
 import math
@@ -15,12 +16,12 @@ autopilot_available       = False
 autopilot_available_color = UNAVAILABLE_COLOR
 
 height = 480
-width  = 720
+width  = 854
 
 
 lane_center        = int(width/2) + 0 # + offset
 car_hood           = 75
-lower_lane_width   = width+150
+lower_lane_width   = width+175
 detection_distance = 110
 distance_center    = lane_center +5 # + offset
 distance_width     = 200
@@ -89,16 +90,18 @@ def detect_lane_width(frame, displayed_frame, prev_left_line_x_pos, prev_right_l
     ## modifiy contrast and brightness
     gray_frame = cv.cvtColor(frame, cv.COLOR_BGR2GRAY)
     # white_frame = cv.threshold(gray_frame, 0, 255, cv.THRESH_BINARY + cv.THRESH_OTSU)[1]
-    alpha = 1
-    beta = -50
-    corected_frame = cv.convertScaleAbs(gray_frame, alpha=alpha, beta=beta)
+    alpha = 1.5
+    beta = -40
+    gray_frame = cv.convertScaleAbs(gray_frame, alpha=alpha, beta=beta)
+    corected_frame = gray_frame
     # corected_frame = cv.bitwise_and(gray_frame, white_frame)
 
     ## blur the frame
-    blur_frame = cv.GaussianBlur(corected_frame, (51, 51), 0)
+    # blur_frame = cv.GaussianBlur(corected_frame, (21, 21), 0)
 
     ## combine the frames
-    combined_frame = cv.add(blur_frame, corected_frame)
+    # combined_frame = cv.addWeighted(blur_frame, 0.8, corected_frame, 0.6, 0)
+    combined_frame = corected_frame
 
     ## bird's eye view of th frame
     M = cv.getPerspectiveTransform(pts1, pts2)
@@ -112,15 +115,24 @@ def detect_lane_width(frame, displayed_frame, prev_left_line_x_pos, prev_right_l
     canny_low  = cv.getTrackbarPos('Canny_low' , 'Trackbars')
     canny_high = cv.getTrackbarPos('Canny_high', 'Trackbars')
 
-    canny_frame = cv.Canny(combined_frame, canny_low, canny_high)
+    canny_frame = cv.GaussianBlur(combined_frame, (5, 5), 0)
+    canny_frame = cv.Canny(canny_frame, canny_low, canny_high)
     canny_frame = cv.warpPerspective(canny_frame, M, (width, height))
-    canny_frame = cv.dilate(canny_frame, None, iterations=1)
-    canny_blur_frame = cv.GaussianBlur(canny_frame, (3, 71), 0, 0, cv.BORDER_CONSTANT, 0)
-
-    canny_frame = cv.add(canny_frame, canny_blur_frame)
+    # canny_frame = cv.dilate(canny_frame, None, iterations=1)
 
     ## convert to black and white
     bw_canny_frame = cv.threshold(canny_frame, 0, 255, cv.THRESH_BINARY)[1]
+
+    lines_1 = cv.HoughLinesP(bw_canny_frame, 2, np.pi/180, 10, minLineLength=50, maxLineGap=5)
+    line_image = np.zeros_like(displayed_frame)
+    if lines_1 is not None:
+      for line in lines_1:
+        x1, y1, x2, y2 = line.reshape(4)
+        if abs(x2 - x1) < abs(y2 - y1):
+          cv.line(line_image, (x1, y1), (x2, y2), (255, 255, 255), 5)
+
+    line_image = cv.cvtColor(line_image, cv.COLOR_BGR2GRAY)
+    bw_canny_frame = cv.bitwise_and(bw_canny_frame, line_image)
 
     ## detect start of the lines
     lower_left_found = False
@@ -182,46 +194,72 @@ def detect_lane_width(frame, displayed_frame, prev_left_line_x_pos, prev_right_l
     # box_height_trackbar = cv.getTrackbarPos('Box_height', 'Trackbars')
     # box_height = box_height_trackbar if box_height_trackbar > 0 else box_height
 
-    box_width = 100
+    box_width = 75
     # box_width_trackbar = cv.getTrackbarPos('Box_width', 'Trackbars')
     # box_width = box_width_trackbar if box_width_trackbar > 0 else box_width
 
-    y = height - box_height
+    y = height
 
     while y > 0:
-
-        ## left threshold
-        img = bw_canny_frame[y-box_height:y, left_base -int(box_width/2):left_base + int(box_width/2)]
-        contours, _ = cv.findContours(img, cv.RETR_TREE, cv.CHAIN_APPROX_SIMPLE)
-
-        for cnt in contours:
-            moment = cv.moments(cnt)
-            if moment["m00"] != 0:
-                cx = int(moment["m10"] / moment["m00"])
-                cy = int(moment["m01"] / moment["m00"])
-                left_boxs_x.append(cx + left_base - int(box_width/2))
-                left_boxs_y.append(cy + y)
-                left_base = left_base - int(box_width/2) + cx
-                lower_left_found = True
+        if bw_canny_frame[y-box_height:y, left_base -int(box_width/2):left_base + int(box_width/2)].any() > 0:
+          print(bw_canny_frame[y-box_height:y, left_base -int(box_width/2):left_base + int(box_width/2)].any())
+          #find center of the white pixels (x, y) in pixels coordinates
+          white_pixels = np.where(bw_canny_frame[y-box_height:y, left_base -int(box_width/2):left_base + int(box_width/2)] == 255)
+          cx = int(np.mean(white_pixels[1]) + left_base - box_width/2)
+          cy = int(np.mean(white_pixels[0]) + y - box_height/2)
+          cv.circle(line_image, (cx, cy), 10, (255, 255, 255), -1)
+          
+          left_boxs_x.append(cx)
+          left_boxs_y.append(cy)
+          left_base = cx
+          lower_left_found = True
 
 
 
-        ## right threshold
-        img = bw_canny_frame[y-box_height:y, right_base -int(box_width/2):right_base + int(box_width/2)]
-        contours, _ = cv.findContours(img, cv.RETR_TREE, cv.CHAIN_APPROX_SIMPLE)
+        if bw_canny_frame[y-box_height:y, right_base - int(box_width/2):right_base + int(box_width/2)].any() > 0:
+          #find center of the white pixels (x, y) in pixels coordinates
+          white_pixels = np.where(bw_canny_frame[y-box_height:y, right_base -int(box_width/2):right_base + int(box_width/2)] == 255)
+          cx = int(np.mean(white_pixels[1]) + right_base - box_width/2)
+          cy = int(np.mean(white_pixels[0]) + y - box_height/2)
+          cv.circle(line_image, (cx, cy), 10, (255, 255, 255), -1)
+          
+          right_boxs_x.append(cx)
+          right_boxs_y.append(cy)
+          right_base = cx
+          lower_right_found = True
 
-        for cnt in contours:
-            moment = cv.moments(cnt)
-            if moment["m00"] != 0:
-                cx = int(moment["m10"] / moment["m00"])
-                cy = int(moment["m01"] / moment["m00"])
-                right_boxs_x.append(cx + right_base - int(box_width/2))
-                right_boxs_y.append(cy + y)
-                right_base = right_base - int(box_width/2) + cx
-                lower_right_found = True
+        # ## left threshold
+        # img = bw_canny_frame[y-box_height:y, left_base -int(box_width/2):left_base + int(box_width/2)]
+        # contours, _ = cv.findContours(img, cv.RETR_TREE, cv.CHAIN_APPROX_SIMPLE)
 
-        cv.rectangle(bw_canny_frame, (left_base  - int(box_width/2), y-box_height), (left_base  + int(box_width/2), y), (255, 255, 255), 2)
-        cv.rectangle(bw_canny_frame, (right_base - int(box_width/2), y-box_height), (right_base + int(box_width/2), y), (255, 255, 255), 2)
+        # for cnt in contours:
+        #     moment = cv.moments(cnt)
+        #     if moment["m00"] != 0:
+        #         cx = int(moment["m10"] / moment["m00"])
+        #         cy = int(moment["m01"] / moment["m00"])
+        #         left_boxs_x.append(cx + left_base - int(box_width/2))
+        #         left_boxs_y.append(cy + y)
+        #         left_base = left_base - int(box_width/2) + cx
+        #         lower_left_found = True
+
+
+
+        # ## right threshold
+        # img = bw_canny_frame[y-box_height:y, right_base -int(box_width/2):right_base + int(box_width/2)]
+        # contours, _ = cv.findContours(img, cv.RETR_TREE, cv.CHAIN_APPROX_SIMPLE)
+
+        # for cnt in contours:
+        #     moment = cv.moments(cnt)
+        #     if moment["m00"] != 0:
+        #         cx = int(moment["m10"] / moment["m00"])
+        #         cy = int(moment["m01"] / moment["m00"])
+        #         right_boxs_x.append(cx + right_base - int(box_width/2))
+        #         right_boxs_y.append(cy + y)
+        #         right_base = right_base - int(box_width/2) + cx
+        #         lower_right_found = True
+
+        cv.rectangle(line_image, (left_base  - int(box_width/2), y-box_height), (left_base  + int(box_width/2), y), (255, 255, 255), 2)
+        cv.rectangle(line_image, (right_base - int(box_width/2), y-box_height), (right_base + int(box_width/2), y), (255, 255, 255), 2)
 
         y -= box_height
 
@@ -238,8 +276,8 @@ def detect_lane_width(frame, displayed_frame, prev_left_line_x_pos, prev_right_l
             x_2 = boxs_x[index + 1]
             y_2 = lines_y[boxs][index + 1]
 
-            cv.line(bw_canny_frame, (x_1, y_1), (x_2, y_2), (0  , 0  , 0  ), 12)
-            cv.line(bw_canny_frame, (x_1, y_1), (x_2, y_2), (255, 255, 255), 8 )
+            # cv.line(bw_canny_frame, (x_1, y_1), (x_2, y_2), (0  , 0  , 0  ), 12)
+            # cv.line(bw_canny_frame, (x_1, y_1), (x_2, y_2), (255, 255, 255), 8 )
 
     left_line_lower_x_pos  =  left_boxs_x[ 0]
     right_line_lower_x_pos = right_boxs_x[ 0]
@@ -252,7 +290,7 @@ def detect_lane_width(frame, displayed_frame, prev_left_line_x_pos, prev_right_l
     upper_right_found = True if (len(right_boxs_x) > 1) and (right_boxs_y[-1] < height/3) else False
 
 
-    return displayed_frame, bw_canny_frame, left_line_lower_x_pos, left_line_upper_x_pos, lower_left_found, upper_left_found, right_line_lower_x_pos, right_line_upper_x_pos, lower_right_found, upper_right_found
+    return displayed_frame, bw_canny_frame, left_line_lower_x_pos, left_line_upper_x_pos, lower_left_found, upper_left_found, right_line_lower_x_pos, right_line_upper_x_pos, lower_right_found, upper_right_found, line_image
 
 
 
@@ -371,7 +409,7 @@ def main():
 
     ## Video here
     # cap = cv.VideoCapture(1)
-    cap = cv.VideoCapture('Test drive\\07.04.2023\\full.MP4')
+    cap = cv.VideoCapture('Test drive\\07.11.2023\\5.MP4')
     
 
     while (cap.isOpened()):
@@ -391,7 +429,7 @@ def main():
                 # frame[:, :, 0] = 0
                 # frame[:, :, 1] = 0
 
-                corected_frame, bw_canny_frameed_frame, true_left_line_x_pos, left_line_upper_x_pos, lower_left_found, upper_left_found, true_right_line_x_pos, right_line_upper_x_pos, lower_right_found, upper_right_found = detect_lane_width(frame, displayed_frame, left_line_lower_x_pos_prev, right_line_lower_x_pos_prev)
+                corected_frame, bw_canny_frameed_frame, true_left_line_x_pos, left_line_upper_x_pos, lower_left_found, upper_left_found, true_right_line_x_pos, right_line_upper_x_pos, lower_right_found, upper_right_found, line_image = detect_lane_width(frame, displayed_frame, left_line_lower_x_pos_prev, right_line_lower_x_pos_prev)
 
                 video_fps = cv.getTrackbarPos('Target FPS', 'Trackbars')  # cap.get(cv.CAP_PROP_FPS)
 
@@ -541,7 +579,7 @@ def main():
 
                 pid_correction = (lane_keeping_P + lane_keeping_I + lane_keeping_D)*0.01
 
-                print(f"error = {error:.5f}, P = {lane_keeping_P:.5f}, I = {lane_keeping_I:.5f}, D = {lane_keeping_D:.5f}, correction = {pid_correction:.5f}")
+                # print(f"error = {error:.5f}, P = {lane_keeping_P:.5f}, I = {lane_keeping_I:.5f}, D = {lane_keeping_D:.5f}, correction = {pid_correction:.5f}")
                 error_prev = error
 
 
@@ -710,12 +748,6 @@ def main():
                 displayed_frame_left_upper_line_x_pos    = map(left_line_upper_x_pos , 0, width, upper_left[0], upper_right[0])
                 displayed_frame_right_upper_line_x_pos   = map(right_line_upper_x_pos, 0, width, upper_left[0], upper_right[0])
 
-                ## mask of the lane according to the left and right lines
-                lane_msk = np.zeros_like(displayed_frame)
-                cv.fillPoly(lane_msk, np.array([[(int(displayed_frame_left_lower_line_x_pos  ), height-car_hood), (int(displayed_frame_left_upper_line_x_pos  ), height-car_hood-detection_distance), (int(displayed_frame_right_upper_line_x_pos ), height-car_hood-detection_distance), (int(displayed_frame_right_lower_line_x_pos ), height-car_hood)]], dtype=np.int32), steering_color)
-                displayed_frame = cv.addWeighted(displayed_frame, 1, lane_msk, 0.5, 0)
-
-
                 displayed_frame_center_lower_line_x_pos = map(lane_lower_position   , 0, width, lower_left[0], lower_right[0])
                 displayed_frame_center_upper_line_x_pos = map(int((left_line_upper_x_pos + right_line_upper_x_pos)/2)   , 0, width, upper_left[0], upper_right[0])
 
@@ -756,11 +788,30 @@ def main():
                 cv.line(corected_frame, (int(center_lower_x_pos), height), (int(center_upper_x_pos), 0), (0, 0, 0), 3)
                 
                 lane_angle_true = np.arctan((center_upper_x_pos - center_lower_x_pos)/height)
-                steering_angle_true = lane_angle_true
+                steering_angle_true = lane_angle_true/2
                 # print(steering_angle_true)
 
-                cv.line(displayed_frame, (int(lane_center), height-car_hood), (int(lane_center + np.tan(lane_angle_true)*(car_hood + detection_distance)/3), int(height-car_hood-detection_distance*np.cos(lane_angle_true))), (0,0,0), 10)
-                cv.line(displayed_frame, (int(lane_center), height-car_hood), (int(lane_center + np.tan(lane_angle_true)*(car_hood + detection_distance)/3), int(height-car_hood-detection_distance*np.cos(lane_angle_true))), lane_color, 5)
+                steering_radius = np.tan(np.radians(90)-steering_angle_true)*2.34 if steering_angle_true != 0 else np.tan(np.radians(89.9))*2.34
+                #draw the steering radius
+                pixel_to_meter = 80
+                #draw the circle representing the steering radius on a new frame and then add it to the original frame by transforming it using the M (inverse the perspective)
+                
+                M = cv.getPerspectiveTransform(pts2, pts1)
+                radius_frame = np.zeros((height, width, 3), np.uint8)
+                cv.circle(radius_frame, (int(center_lower_x_pos + (steering_radius*pixel_to_meter)), int(height)), int(abs(steering_radius*pixel_to_meter)), steering_color, int((right_line_lower_x_pos - left_line_lower_x_pos)/1))
+                # cv.circle(radius_frame, (int(left_line_lower_x_pos + (steering_radius*pixel_to_meter)), int(height)), int(abs(steering_radius*pixel_to_meter)), left_lower_color, 5)
+                # cv.circle(radius_frame, (int(right_line_lower_x_pos + (steering_radius*pixel_to_meter)), int(height)), int(abs(steering_radius*pixel_to_meter)), right_lower_color, 5)
+                
+                displayed_frame = cv.addWeighted(displayed_frame, 1, cv.warpPerspective(radius_frame, M, (width, height)), 1, 0)
+                
+                
+                # cv.circle(corected_frame, (int(center_lower_x_pos + (steering_radius*pixel_to_meter)), int(height)), int(abs(steering_radius*pixel_to_meter)), (0, 0, 0), 4)
+                # cv.circle(corected_frame, (int(center_lower_x_pos + (steering_radius*pixel_to_meter)), int(height)), int(abs(steering_radius*pixel_to_meter)), (255, 255, 255), 2)
+                
+                print(f"{np.degrees(steering_angle_true):.2f} - {steering_radius*pixel_to_meter:.2f}m")
+
+                # cv.line(displayed_frame, (int(lane_center), height-car_hood), (int(lane_center + np.tan(lane_angle_true)*(car_hood + detection_distance)/3), int(height-car_hood-detection_distance*np.cos(lane_angle_true))), (0,0,0), 10)
+                # cv.line(displayed_frame, (int(lane_center), height-car_hood), (int(lane_center + np.tan(lane_angle_true)*(car_hood + detection_distance)/3), int(height-car_hood-detection_distance*np.cos(lane_angle_true))), lane_color, 5)
 
                 
                 ## add legend for the vertical lines' colors (grey if the line is not found, white if it is found, blue if it is predicted)
@@ -857,6 +908,8 @@ def main():
                 cv.imshow('displayed_frame'     , displayed_frame       )
                 cv.imshow('corected_frame'      , corected_frame        )
                 cv.imshow('bw_canny_frame_frame', bw_canny_frameed_frame)
+                cv.imshow('radius_frame'        , radius_frame          )
+                cv.imshow('lines_frame'         , line_image           )
 
                 
 
@@ -880,6 +933,7 @@ def main():
 
                 if cv.waitKey(1) == 27:
                     break
+
 
 
 def simulation(angle:float):
