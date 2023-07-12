@@ -20,10 +20,10 @@ A line is considered not detected when it is not visible or not stable enough to
  <img width=873px height=473px src="https://github.com/TheAypisamFpv/Autopilot/blob/master/images/autopilotV6%20active%201.png" alt="Autopilot active"></a>
 </p>
 
-### Autopilot inactive
+### Autopilot unavailable
 <p align="center"> 
   <a href="" rel="noopener">
- <img width=873px height=473px src="https://github.com/TheAypisamFpv/Autopilot/blob/master/images/autopilotV6%20inactive.png" alt="Autopilot inactive"></a>
+ <img width=873px height=473px src="https://github.com/TheAypisamFpv/Autopilot/blob/master/images/autopilotV6%20unavailable.png" alt="Autopilot inactive"></a>
 </p>
 
 ### Lane departure warning
