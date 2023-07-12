@@ -17,7 +17,7 @@ A line is considered not detected when it is not visible or not stable enough to
 
 <p align="center"> 
   <a href="" rel="noopener">
- <img width=873px height=473px src="https://github.com/TheAypisamFpv/Autopilot/blob/master/images/autopilotV6%20active%203.png" alt="Autopilot active"></a>
+ <img width=873px height=473px src="https://github.com/TheAypisamFpv/Autopilot/blob/master/images/autopilotV6%20active%201.png" alt="Autopilot active"></a>
 </p>
 
 ### Autopilot inactive
