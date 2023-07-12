@@ -24,7 +24,7 @@
 </p>
 <p align="center"> 
   <a href="" rel="noopener">
- <img width=200px height=200px src="https://github.com/TheAypisamFpv/Autopilot/blob/master/images/autopilotV6%20active%203.png" alt="Autopilot active"></a>
+ <img width=1920px height=1040px src="https://github.com/TheAypisamFpv/Autopilot/blob/master/images/autopilotV6%20active%203.png" alt="Autopilot active"></a>
 </p>
 
 <p align="center"> Autopilot inactive.
@@ -32,7 +32,7 @@
 </p>
 <p align="center"> 
   <a href="" rel="noopener">
- <img width=200px height=200px src="https://github.com/TheAypisamFpv/Autopilot/blob/master/images/autopilotV6%20inactive.png" alt="Autopilot inactive"></a>
+ <img width=1920px height=1040px src="https://github.com/TheAypisamFpv/Autopilot/blob/master/images/autopilotV6%20inactive.png" alt="Autopilot inactive"></a>
 </p>
 
 <p align="center"> lane departure warning.
@@ -41,5 +41,5 @@
 
 <p align="center"> 
   <a href="" rel="noopener">
- <img width=200px height=200px src="https://github.com/TheAypisamFpv/Autopilot/blob/master/images/autopilotV6%20lane%20departure.png" alt="lane departure warning"></a>
+ <img width=1919px height=1038px src="https://github.com/TheAypisamFpv/Autopilot/blob/master/images/autopilotV6%20lane%20departure.png" alt="lane departure warning"></a>
 </p>
