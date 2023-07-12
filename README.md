@@ -17,20 +17,30 @@ A line is considered not detected when it is not visible or not stable enough to
 
 <p align="center"> 
   <a href="" rel="noopener">
- <img width=873px height=473px src="https://github.com/TheAypisamFpv/Autopilot/blob/master/images/autopilotV6%20active%201.png" alt="Autopilot active"></a>
+ <img width=1024px height=562px src="https://github.com/TheAypisamFpv/Autopilot/blob/master/images/V6/autopilotV6%20active%201.png" alt="Autopilot active"></a>
+</p>
+<p align="center"> 
+  <a href="" rel="noopener">
+ <img width=1024px height=559px src="https://github.com/TheAypisamFpv/Autopilot/blob/master/images/V6/autopilotV6%20active%202.png" alt="Autopilot active"></a>
+</p>
+
+### Lane prediction
+<p align="center"> 
+  <a href="" rel="noopener">
+ <img width=1024px height=562px src="https://github.com/TheAypisamFpv/Autopilot/blob/master/images/V6/autopilotV6%20lane%20prediction.png" alt="Autopilot inactive"></a>
 </p>
 
 ### Autopilot unavailable
 <p align="center"> 
   <a href="" rel="noopener">
- <img width=873px height=473px src="https://github.com/TheAypisamFpv/Autopilot/blob/master/images/autopilotV6%20unavailable.png" alt="Autopilot inactive"></a>
+ <img width=1024px height=562px src="https://github.com/TheAypisamFpv/Autopilot/blob/master/images/V6/autopilotV6%20unavailable.png" alt="Autopilot inactive"></a>
 </p>
 
 ### Lane departure warning
 
 <p align="center"> 
   <a href="" rel="noopener">
- <img width=872px height=471px src="https://github.com/TheAypisamFpv/Autopilot/blob/master/images/autopilotV6%20lane%20departure.png" alt="lane departure warning"></a>
+ <img width=1024px height=562px src="https://github.com/TheAypisamFpv/Autopilot/blob/master/images/V6/autopilotV6%20lane%20departure.png" alt="lane departure warning"></a>
 </p>
 
 ---
