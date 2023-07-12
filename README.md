@@ -1,4 +1,4 @@
-<h3 align="center">Autopilot</h3>
+<h3 align="center">Autopilot (latest version: AutopilotV6)</h3>
 
 ---
 
@@ -32,3 +32,5 @@ A line is considered not detected when it is not visible or not stable enough to
   <a href="" rel="noopener">
  <img width=872px height=471px src="https://github.com/TheAypisamFpv/Autopilot/blob/master/images/autopilotV6%20lane%20departure.png" alt="lane departure warning"></a>
 </p>
+
+---
