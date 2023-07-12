@@ -36,7 +36,7 @@ pts1 = np.float32([upper_left, lower_left, upper_right, lower_right])
 pts2 = np.float32([[0, 0], [0, height], [width, 0], [width, height]])
 
 cv.namedWindow('Trackbars')
-default_canny_low  = 200
+default_canny_low  = 175
 default_canny_high = 225
 
 cv.createTrackbar('Canny_low' , 'Trackbars', default_canny_low , 255, lambda x: None)
@@ -159,31 +159,6 @@ def detect_lane_width(frame, displayed_frame, prev_left_line_x_pos, prev_right_l
             break    
 
 
-    ## histogram based lane detecting
-
-    # histogram = np.sum(bw_canny_frame[height-detecting_height:height, :], axis=0)
-
-
-    ## center = lane_center
-    # exterior_threshold = 10
-    # interior_threshold = 10
-    # left_base  = np.argmax(histogram[       exterior_threshold       :lane_center - interior_threshold]) + exterior_threshold + 20
-    # right_base = np.argmax(histogram[lane_center + interior_threshold:width       - exterior_threshold]) + lane_center + interior_threshold
-
-    # if left_base == exterior_threshold + 20:
-    #     left_base = int(prev_left_line_x_pos)
-    #     left_found = False
-    # else:
-    #     left_found = True
-
-    # if right_base == lane_center + interior_threshold:
-    #     right_base = int(prev_right_line_x_pos)
-    #     right_found = False
-    # else:
-    #     right_found = True
-
-
-
     ## sliding boxs
     left_boxs_x = [left_base]
     left_boxs_y = [height]
@@ -202,7 +177,6 @@ def detect_lane_width(frame, displayed_frame, prev_left_line_x_pos, prev_right_l
 
     while y > 0:
         if bw_canny_frame[y-box_height:y, left_base -int(box_width/2):left_base + int(box_width/2)].any() > 0:
-          print(bw_canny_frame[y-box_height:y, left_base -int(box_width/2):left_base + int(box_width/2)].any())
           #find center of the white pixels (x, y) in pixels coordinates
           white_pixels = np.where(bw_canny_frame[y-box_height:y, left_base -int(box_width/2):left_base + int(box_width/2)] == 255)
           cx = int(np.mean(white_pixels[1]) + left_base - box_width/2)
@@ -227,36 +201,6 @@ def detect_lane_width(frame, displayed_frame, prev_left_line_x_pos, prev_right_l
           right_boxs_y.append(cy)
           right_base = cx
           lower_right_found = True
-
-        # ## left threshold
-        # img = bw_canny_frame[y-box_height:y, left_base -int(box_width/2):left_base + int(box_width/2)]
-        # contours, _ = cv.findContours(img, cv.RETR_TREE, cv.CHAIN_APPROX_SIMPLE)
-
-        # for cnt in contours:
-        #     moment = cv.moments(cnt)
-        #     if moment["m00"] != 0:
-        #         cx = int(moment["m10"] / moment["m00"])
-        #         cy = int(moment["m01"] / moment["m00"])
-        #         left_boxs_x.append(cx + left_base - int(box_width/2))
-        #         left_boxs_y.append(cy + y)
-        #         left_base = left_base - int(box_width/2) + cx
-        #         lower_left_found = True
-
-
-
-        # ## right threshold
-        # img = bw_canny_frame[y-box_height:y, right_base -int(box_width/2):right_base + int(box_width/2)]
-        # contours, _ = cv.findContours(img, cv.RETR_TREE, cv.CHAIN_APPROX_SIMPLE)
-
-        # for cnt in contours:
-        #     moment = cv.moments(cnt)
-        #     if moment["m00"] != 0:
-        #         cx = int(moment["m10"] / moment["m00"])
-        #         cy = int(moment["m01"] / moment["m00"])
-        #         right_boxs_x.append(cx + right_base - int(box_width/2))
-        #         right_boxs_y.append(cy + y)
-        #         right_base = right_base - int(box_width/2) + cx
-        #         lower_right_found = True
 
         cv.rectangle(line_image, (left_base  - int(box_width/2), y-box_height), (left_base  + int(box_width/2), y), (255, 255, 255), 2)
         cv.rectangle(line_image, (right_base - int(box_width/2), y-box_height), (right_base + int(box_width/2), y), (255, 255, 255), 2)
@@ -567,7 +511,7 @@ def main():
 
 
 
-                ## lane keeping PID
+                ## lane keeping PID (not in use for now)
                 Kp = 0.5
                 Ki = 0.01
                 Kd = 0.1
@@ -751,20 +695,6 @@ def main():
                 displayed_frame_center_lower_line_x_pos = map(lane_lower_position   , 0, width, lower_left[0], lower_right[0])
                 displayed_frame_center_upper_line_x_pos = map(int((left_line_upper_x_pos + right_line_upper_x_pos)/2)   , 0, width, upper_left[0], upper_right[0])
 
-                ## display the lines
-                ## their background
-                # cv.line(displayed_frame, (int(displayed_frame_left_lower_line_x_pos  ), height-car_hood), (int(displayed_frame_left_upper_line_x_pos  ), height-car_hood-detection_distance), (0, 0, 0), 3)
-                # cv.line(displayed_frame, (int(displayed_frame_right_lower_line_x_pos ), height-car_hood), (int(displayed_frame_right_upper_line_x_pos ), height-car_hood-detection_distance), (0, 0, 0), 3)
-                # cv.line(displayed_frame, (int(displayed_frame_center_lower_line_x_pos), height-car_hood), (int(displayed_frame_center_upper_line_x_pos), height-car_hood-detection_distance), (0, 0, 0), 3)
-
-                # # ## their foreground
-                # cv.line(displayed_frame, (int(displayed_frame_left_lower_line_x_pos  ), height-car_hood), (int(displayed_frame_left_upper_line_x_pos  ), height-car_hood-detection_distance), left_lower_color , 2)
-                # cv.line(displayed_frame, (int(displayed_frame_right_lower_line_x_pos ), height-car_hood), (int(displayed_frame_right_upper_line_x_pos ), height-car_hood-detection_distance), right_lower_color, 2)
-                # cv.line(displayed_frame, (int(displayed_frame_center_lower_line_x_pos), height-car_hood), (int(displayed_frame_center_upper_line_x_pos), height-car_hood-detection_distance), lane_color , 1)
-
-                
-
-
 
                 ## their foreground
                 cv.line(corected_frame, ( int(width/2               ) , height                 ), (int(left_line_lower_x_pos ), height-detecting_height), (0,   255,   0  ), 4)
@@ -790,46 +720,26 @@ def main():
                 lane_angle_true = np.arctan((center_upper_x_pos - center_lower_x_pos)/height)
                 steering_angle_true = lane_angle_true/2
                 # print(steering_angle_true)
-
-                steering_radius = np.tan(np.radians(90)-steering_angle_true)*2.34 if steering_angle_true != 0 else np.tan(np.radians(89.9))*2.34
+                if steering_angle_true == 0:
+                  steering_angle_true = np.radians(0.01)
+                steering_radius = np.tan(np.radians(90)-steering_angle_true)*2.34
                 #draw the steering radius
                 pixel_to_meter = 80
                 #draw the circle representing the steering radius on a new frame and then add it to the original frame by transforming it using the M (inverse the perspective)
                 
-                M = cv.getPerspectiveTransform(pts2, pts1)
-                radius_frame = np.zeros((height, width, 3), np.uint8)
-                cv.circle(radius_frame, (int(center_lower_x_pos + (steering_radius*pixel_to_meter)), int(height)), int(abs(steering_radius*pixel_to_meter)), steering_color, int((right_line_lower_x_pos - left_line_lower_x_pos)/1))
-                # cv.circle(radius_frame, (int(left_line_lower_x_pos + (steering_radius*pixel_to_meter)), int(height)), int(abs(steering_radius*pixel_to_meter)), left_lower_color, 5)
-                # cv.circle(radius_frame, (int(right_line_lower_x_pos + (steering_radius*pixel_to_meter)), int(height)), int(abs(steering_radius*pixel_to_meter)), right_lower_color, 5)
                 
+                radius_frame = np.zeros((height, width, 3), np.uint8)
+                cv.circle(radius_frame, (int(center_lower_x_pos + (steering_radius*pixel_to_meter)), int(height)), int(abs(steering_radius*pixel_to_meter)), steering_color, int((right_line_lower_x_pos - left_line_lower_x_pos)-50))
+                cv.circle(radius_frame, (int(left_line_lower_x_pos + (steering_radius*pixel_to_meter)), int(height)), int(abs(steering_radius*pixel_to_meter)), left_lower_color, 10)
+                cv.circle(radius_frame, (int(right_line_lower_x_pos + (steering_radius*pixel_to_meter)), int(height)), int(abs(steering_radius*pixel_to_meter)), right_lower_color, 10)
+                M = cv.getPerspectiveTransform(pts2, pts1)
                 displayed_frame = cv.addWeighted(displayed_frame, 1, cv.warpPerspective(radius_frame, M, (width, height)), 1, 0)
                 
+                M = cv.getPerspectiveTransform(pts1, pts2)
+                radius_frame = cv.addWeighted(radius_frame, 1, cv.warpPerspective(frame.copy(), M, (width, height)), 1, 0)
                 
-                # cv.circle(corected_frame, (int(center_lower_x_pos + (steering_radius*pixel_to_meter)), int(height)), int(abs(steering_radius*pixel_to_meter)), (0, 0, 0), 4)
-                # cv.circle(corected_frame, (int(center_lower_x_pos + (steering_radius*pixel_to_meter)), int(height)), int(abs(steering_radius*pixel_to_meter)), (255, 255, 255), 2)
-                
-                print(f"{np.degrees(steering_angle_true):.2f} - {steering_radius*pixel_to_meter:.2f}m")
+                print(f"{np.degrees(steering_angle_true):.2f} - {steering_radius:.2f}m")
 
-                # cv.line(displayed_frame, (int(lane_center), height-car_hood), (int(lane_center + np.tan(lane_angle_true)*(car_hood + detection_distance)/3), int(height-car_hood-detection_distance*np.cos(lane_angle_true))), (0,0,0), 10)
-                # cv.line(displayed_frame, (int(lane_center), height-car_hood), (int(lane_center + np.tan(lane_angle_true)*(car_hood + detection_distance)/3), int(height-car_hood-detection_distance*np.cos(lane_angle_true))), lane_color, 5)
-
-                
-                ## add legend for the vertical lines' colors (grey if the line is not found, white if it is found, blue if it is predicted)
-                # cv.putText(displayed_frame, "Color legend:"                 , (10, height-90),  cv.FONT_HERSHEY_SIMPLEX, 0.45, (0   , 0   , 0   ), 3)
-                # cv.putText(displayed_frame, "Color legend:"                 , (10, height-90),  cv.FONT_HERSHEY_SIMPLEX, 0.45, AVAILABLE_COLOR[0], 1)
-
-                # cv.putText(displayed_frame, "- Grey : The line is not found", (25, height-70 ), cv.FONT_HERSHEY_SIMPLEX, 0.45, (0   , 0   , 0   )  , 3)
-                # cv.putText(displayed_frame, "- Grey : The line is not found", (25, height-70 ), cv.FONT_HERSHEY_SIMPLEX, 0.45, UNAVAILABLE_COLOR[0], 1)
-
-                # cv.putText(displayed_frame, "- White: The line is found"    , (25, height-50 ), cv.FONT_HERSHEY_SIMPLEX, 0.45, (0   , 0   , 0   ), 3)
-                # cv.putText(displayed_frame, "- White: The line is found"    , (25, height-50 ), cv.FONT_HERSHEY_SIMPLEX, 0.45, AVAILABLE_COLOR[0], 1)
-
-                # cv.putText(displayed_frame, "- Blue : The line is predicted", (25, height-30 ), cv.FONT_HERSHEY_SIMPLEX, 0.45, (0   , 0   , 0   ), 3)
-                # cv.putText(displayed_frame, "- Blue : The line is predicted", (25, height-30 ), cv.FONT_HERSHEY_SIMPLEX, 0.45, AVAILABLE_COLOR[1], 1)
-
-                # cv.putText(displayed_frame, "- Red  : Lane departure"       , (25, height-10 ), cv.FONT_HERSHEY_SIMPLEX, 0.45, (0   , 0   , 0   )       , 3)
-                # cv.putText(displayed_frame, "- Red  : Lane departure"       , (25, height-10 ), cv.FONT_HERSHEY_SIMPLEX, 0.45, ALERTE_DEPARTURE_COLOR[0], 1)
-                    
 
                 wheel_angle =( np.degrees(lane_keeping_angle)*0.5 + np.degrees(steering_angle_true))
 
