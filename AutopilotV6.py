@@ -400,7 +400,7 @@ def main():
 
     ## Video here
     # cap = cv.VideoCapture(1)
-    # cap = cv.VideoCapture('Test drive\\07.19.2023\\1.MP4')
+    cap = cv.VideoCapture('Test drive\\07.19.2023\\1.MP4')
     
 
     while (cap.isOpened()):
