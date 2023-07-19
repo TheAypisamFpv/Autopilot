@@ -1,10 +1,9 @@
-from calendar import c
 import cv2 as cv
 import numpy as np
 import math
 import time
-import matplotlib.pyplot as plt
 import controller_input
+import keyboard
 
 
 """ Blue Green Red """
@@ -19,12 +18,41 @@ height = 480
 width  = 854
 
 
-lane_center        = int(width/2) + 0 # + offset
-car_hood           = 75
-lower_lane_width   = width+175
-detection_distance = 110
-distance_center    = lane_center +5 # + offset
-distance_width     = 200
+# import car settings
+show_transformation = False
+
+car_settings = {
+  "lane_center": 0,
+  "car_hood": 0,
+  "lower_lane_width": 0,
+  "detection_distance": 0,
+  "distance_center": 0,
+  "distance_width": 0,
+  "wheel_base_length": 0
+  }
+
+with open('car settings\\aygo.txt', 'r') as file:
+  lines = file.readlines()
+  if len(lines) != 7:
+    raise Exception(f"The car settings file is not correct, {len(lines)} lines found instead of 7")
+  
+  for line in lines:
+    line = line.strip()
+    key, value = line.split(':')
+    car_settings[key] = float(value)
+
+print("car setting imported")
+
+# car settings
+lane_center        = int(width/2 + car_settings["lane_center"]) # + offset
+car_hood           = int(car_settings["car_hood"])
+lower_lane_width   = int(width + car_settings["lower_lane_width"])
+detection_distance = int(car_settings["detection_distance"])
+distance_center    = int(lane_center + car_settings["distance_center"]) # + offset
+distance_width     = int(car_settings["distance_width"])
+wheel_base_length  = int(car_settings["wheel_base_length"])
+
+print(f"lane_center: {lane_center}, car_hood: {car_hood}, lower_lane_width: {lower_lane_width}, detection_distance: {detection_distance}, distance_center: {distance_center}, distance_width: {distance_width}, wheel_base_length: {wheel_base_length}")
 
 upper_left  = [int(distance_center - distance_width/2),int(height - car_hood - detection_distance)]
 upper_right = [int(distance_center + distance_width/2),int(height - car_hood - detection_distance)]
@@ -128,7 +156,7 @@ def detect_lane_width(frame, displayed_frame, prev_left_line_x_pos, prev_right_l
     if lines_1 is not None:
       for line in lines_1:
         x1, y1, x2, y2 = line.reshape(4)
-        if abs(x2 - x1) < abs(y2 - y1):
+        if abs(x2 - x1) < 2*abs(y2 - y1):
           cv.line(line_image, (x1, y1), (x2, y2), (255, 255, 255), 5)
 
     line_image = cv.cvtColor(line_image, cv.COLOR_BGR2GRAY)
@@ -165,6 +193,9 @@ def detect_lane_width(frame, displayed_frame, prev_left_line_x_pos, prev_right_l
     right_boxs_x = [right_base]
     right_boxs_y = [height]
 
+    left_line_points = []
+    right_line_points = []
+
     box_height = 25
     # box_height_trackbar = cv.getTrackbarPos('Box_height', 'Trackbars')
     # box_height = box_height_trackbar if box_height_trackbar > 0 else box_height
@@ -174,6 +205,9 @@ def detect_lane_width(frame, displayed_frame, prev_left_line_x_pos, prev_right_l
     # box_width = box_width_trackbar if box_width_trackbar > 0 else box_width
 
     y = height
+
+    left_rectangle_pos = []
+    right_rectangle_pos = []
 
     while y > 0:
         if bw_canny_frame[y-box_height:y, left_base -int(box_width/2):left_base + int(box_width/2)].any() > 0:
@@ -185,8 +219,20 @@ def detect_lane_width(frame, displayed_frame, prev_left_line_x_pos, prev_right_l
           
           left_boxs_x.append(cx)
           left_boxs_y.append(cy)
+          left_line_points.append([cx, cy])
+          
           left_base = cx
           lower_left_found = True
+        elif len(left_boxs_x) > 1:
+          cx = left_base - (left_boxs_x[-2] - left_boxs_x[-1]) if abs((left_boxs_x[-2] - left_boxs_x[-1])) < box_width else left_boxs_x[-1]
+          cy = y - int(box_height/2)
+          cv.circle(line_image, (cx, cy), 10, (255, 255, 255), -1)
+          
+          left_boxs_x.append(cx)
+          left_boxs_y.append(cy)
+          left_line_points.append([cx, cy])
+
+          left_base = cx
 
 
 
@@ -199,29 +245,30 @@ def detect_lane_width(frame, displayed_frame, prev_left_line_x_pos, prev_right_l
           
           right_boxs_x.append(cx)
           right_boxs_y.append(cy)
+          right_line_points.append([cx, cy])
+          
           right_base = cx
           lower_right_found = True
+        elif len(right_boxs_x) > 1:
+          cx = right_base - (right_boxs_x[-2] - right_boxs_x[-1]) if abs((right_boxs_x[-2] - right_boxs_x[-1])) < box_width else right_boxs_x[-1]
+          cy = y - int(box_height/2)
+          cv.circle(line_image, (cx, cy), 10, (255, 255, 255), -1)
+          
+          right_boxs_x.append(cx)
+          right_boxs_y.append(cy)
+          right_line_points.append([cx, cy])
 
+          right_base = cx
+          
+
+        left_rectangle_pos.append([left_base, y-box_height])
         cv.rectangle(line_image, (left_base  - int(box_width/2), y-box_height), (left_base  + int(box_width/2), y), (255, 255, 255), 2)
+        
+        right_rectangle_pos.append([right_base, y-box_height])
         cv.rectangle(line_image, (right_base - int(box_width/2), y-box_height), (right_base + int(box_width/2), y), (255, 255, 255), 2)
 
         y -= box_height
-
-
-    lines_x = [left_boxs_x, right_boxs_x]
-    lines_y = [left_boxs_y, right_boxs_y]
-
-    for boxs in range(len(lines_x)):
-        boxs_x = lines_x[boxs]
-        for index in range(len(boxs_x)-1):
-            x_1 = boxs_x[index]
-            y_1 = lines_y[boxs][index]
-
-            x_2 = boxs_x[index + 1]
-            y_2 = lines_y[boxs][index + 1]
-
-            # cv.line(bw_canny_frame, (x_1, y_1), (x_2, y_2), (0  , 0  , 0  ), 12)
-            # cv.line(bw_canny_frame, (x_1, y_1), (x_2, y_2), (255, 255, 255), 8 )
+        
 
     left_line_lower_x_pos  =  left_boxs_x[ 0]
     right_line_lower_x_pos = right_boxs_x[ 0]
@@ -234,7 +281,7 @@ def detect_lane_width(frame, displayed_frame, prev_left_line_x_pos, prev_right_l
     upper_right_found = True if (len(right_boxs_x) > 1) and (right_boxs_y[-1] < height/3) else False
 
 
-    return displayed_frame, bw_canny_frame, left_line_lower_x_pos, left_line_upper_x_pos, lower_left_found, upper_left_found, right_line_lower_x_pos, right_line_upper_x_pos, lower_right_found, upper_right_found, line_image
+    return displayed_frame, bw_canny_frame, left_line_lower_x_pos, left_line_upper_x_pos, lower_left_found, upper_left_found, right_line_lower_x_pos, right_line_upper_x_pos, lower_right_found, upper_right_found, line_image, left_rectangle_pos, right_rectangle_pos
 
 
 
@@ -353,7 +400,7 @@ def main():
 
     ## Video here
     # cap = cv.VideoCapture(1)
-    cap = cv.VideoCapture('Test drive\\07.11.2023\\5.MP4')
+    # cap = cv.VideoCapture('Test drive\\07.19.2023\\1.MP4')
     
 
     while (cap.isOpened()):
@@ -373,7 +420,7 @@ def main():
                 # frame[:, :, 0] = 0
                 # frame[:, :, 1] = 0
 
-                corected_frame, bw_canny_frameed_frame, true_left_line_x_pos, left_line_upper_x_pos, lower_left_found, upper_left_found, true_right_line_x_pos, right_line_upper_x_pos, lower_right_found, upper_right_found, line_image = detect_lane_width(frame, displayed_frame, left_line_lower_x_pos_prev, right_line_lower_x_pos_prev)
+                corected_frame, bw_canny_frameed_frame, true_left_line_x_pos, left_line_upper_x_pos, lower_left_found, upper_left_found, true_right_line_x_pos, right_line_upper_x_pos, lower_right_found, upper_right_found, line_image, left_line_points, right_line_points = detect_lane_width(frame, displayed_frame, left_line_lower_x_pos_prev, right_line_lower_x_pos_prev)
 
                 video_fps = cv.getTrackbarPos('Target FPS', 'Trackbars')  # cap.get(cv.CAP_PROP_FPS)
 
@@ -676,10 +723,11 @@ def main():
 
 
                 ## draw the lines connected to the 4 points used for the perspective transform
-                # cv.line(displayed_frame, upper_left  , upper_right , (0, 0, 255), 2)
-                # cv.line(displayed_frame, upper_right , lower_right , (0, 0, 255), 2)
-                # cv.line(displayed_frame, lower_right , lower_left  , (0, 0, 255), 2)
-                # cv.line(displayed_frame, lower_left  , upper_left  , (0, 0, 255), 2)
+                if show_transformation :
+                  cv.line(displayed_frame, upper_left  , upper_right , (0, 0, 255), 2)
+                  cv.line(displayed_frame, upper_right , lower_right , (0, 0, 255), 2)
+                  cv.line(displayed_frame, lower_right , lower_left  , (0, 0, 255), 2)
+                  cv.line(displayed_frame, lower_left  , upper_left  , (0, 0, 255), 2)
 
 
 
@@ -722,26 +770,40 @@ def main():
                 # print(steering_angle_true)
                 if steering_angle_true == 0:
                   steering_angle_true = np.radians(0.01)
-                steering_radius = np.tan(np.radians(90)-steering_angle_true)*2.34
+                steering_radius = np.tan(np.radians(90)-steering_angle_true)*wheel_base_length
                 #draw the steering radius
-                pixel_to_meter = 80
+                pixel_to_meter = 70
                 #draw the circle representing the steering radius on a new frame and then add it to the original frame by transforming it using the M (inverse the perspective)
                 
                 
                 radius_frame = np.zeros((height, width, 3), np.uint8)
-                cv.circle(radius_frame, (int(center_lower_x_pos + (steering_radius*pixel_to_meter)), int(height)), int(abs(steering_radius*pixel_to_meter)), steering_color, int((right_line_lower_x_pos - left_line_lower_x_pos)-50))
-                cv.circle(radius_frame, (int(left_line_lower_x_pos + (steering_radius*pixel_to_meter)), int(height)), int(abs(steering_radius*pixel_to_meter)), left_lower_color, 10)
-                cv.circle(radius_frame, (int(right_line_lower_x_pos + (steering_radius*pixel_to_meter)), int(height)), int(abs(steering_radius*pixel_to_meter)), right_lower_color, 10)
+                cv.circle(radius_frame, (int(center_lower_x_pos + (steering_radius*pixel_to_meter)), int(height)), int(abs(steering_radius*pixel_to_meter)), steering_color, int((right_line_lower_x_pos - left_line_lower_x_pos)-100))
+                # cv.circle(radius_frame, (int(left_line_lower_x_pos + (steering_radius*pixel_to_meter)), int(height)), int(abs(steering_radius*pixel_to_meter)), left_lower_color, 10)
+                # cv.circle(radius_frame, (int(right_line_lower_x_pos + (steering_radius*pixel_to_meter)), int(height)), int(abs(steering_radius*pixel_to_meter)), right_lower_color, 10)
+
+                for index in range(len(left_line_points)-2):
+                   if index % 2 == 0 :
+                    cv.line(radius_frame, (int(left_line_points[index][0]), int(left_line_points[index][1])), (int(left_line_points[index+2][0]), int(left_line_points[index+2][1])), left_lower_color, 10)
+                    cv.line(radius_frame, (int(right_line_points[index][0]), int(right_line_points[index][1])), (int(right_line_points[index+2][0]), int(right_line_points[index+2][1])), right_lower_color, 10)
+                
                 M = cv.getPerspectiveTransform(pts2, pts1)
                 displayed_frame = cv.addWeighted(displayed_frame, 1, cv.warpPerspective(radius_frame, M, (width, height)), 1, 0)
                 
                 M = cv.getPerspectiveTransform(pts1, pts2)
                 radius_frame = cv.addWeighted(radius_frame, 1, cv.warpPerspective(frame.copy(), M, (width, height)), 1, 0)
+
                 
-                print(f"{np.degrees(steering_angle_true):.2f} - {steering_radius:.2f}m")
-
-
                 wheel_angle =( np.degrees(lane_keeping_angle)*0.5 + np.degrees(steering_angle_true))
+                #if wheel_angle > 10, press the right arrow key, if wheel_angle < -10, press the left arrow key
+                # if wheel_angle > 10:
+                #   keyboard.press("d")
+                #   keyboard.release("d")
+                # elif wheel_angle < -10:
+                #   keyboard.press("q")
+                #   keyboard.release("q")
+                  
+
+                print(f"{wheel_angle:.2f} - {steering_radius:.2f}m")
 
                 steering_angle = map(wheel_angle, -25, 25, -30, 30)
 
