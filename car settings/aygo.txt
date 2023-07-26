@@ -5,3 +5,4 @@ detection_distance:120
 distance_center:5
 distance_width:170
 wheel_base_length:2.34
+steering_ratio:13.4

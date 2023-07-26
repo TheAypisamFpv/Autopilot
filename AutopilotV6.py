@@ -28,12 +28,13 @@ car_settings = {
   "detection_distance": 0,
   "distance_center": 0,
   "distance_width": 0,
-  "wheel_base_length": 0
+  "wheel_base_length": 0,
+  "steering_ratio": 0,
   }
 
 with open('car settings\\aygo.txt', 'r') as file:
   lines = file.readlines()
-  if len(lines) != 7:
+  if len(lines) != len(car_settings):
     raise Exception(f"The car settings file is not correct, {len(lines)} lines found instead of 7")
   
   for line in lines:
@@ -50,7 +51,8 @@ lower_lane_width   = int(width + car_settings["lower_lane_width"])
 detection_distance = int(car_settings["detection_distance"])
 distance_center    = int(lane_center + car_settings["distance_center"]) # + offset
 distance_width     = int(car_settings["distance_width"])
-wheel_base_length  = int(car_settings["wheel_base_length"])
+wheel_base_length  = float(car_settings["wheel_base_length"])
+steering_ratio     = float(car_settings["steering_ratio"])
 
 print(f"lane_center: {lane_center}, car_hood: {car_hood}, lower_lane_width: {lower_lane_width}, detection_distance: {detection_distance}, distance_center: {distance_center}, distance_width: {distance_width}, wheel_base_length: {wheel_base_length}")
 
@@ -274,8 +276,8 @@ def detect_lane_width(frame, displayed_frame, prev_left_line_x_pos, prev_right_l
     right_line_lower_x_pos = right_boxs_x[ 0]
     
 
-    left_line_upper_x_pos  =  left_boxs_x[-1]
-    right_line_upper_x_pos = right_boxs_x[-1]
+    left_line_upper_x_pos  =  left_boxs_x[int(len(left_boxs_x)/2)]
+    right_line_upper_x_pos = right_boxs_x[int(len(right_boxs_x)/2)]
 
     upper_left_found  = True if (len(left_boxs_x)  > 1) and (left_boxs_y[ -1] < height/3) else False
     upper_right_found = True if (len(right_boxs_x) > 1) and (right_boxs_y[-1] < height/3) else False
@@ -400,7 +402,7 @@ def main():
 
     ## Video here
     # cap = cv.VideoCapture(1)
-    cap = cv.VideoCapture('Test drive\\07.19.2023\\1.MP4')
+    cap = cv.VideoCapture('Test drive\\07.19.2023\\2.MP4')
     
 
     while (cap.isOpened()):
@@ -766,18 +768,20 @@ def main():
                 cv.line(corected_frame, (int(center_lower_x_pos), height), (int(center_upper_x_pos), 0), (0, 0, 0), 3)
                 
                 lane_angle_true = np.arctan((center_upper_x_pos - center_lower_x_pos)/height)
-                steering_angle_true = lane_angle_true/2
+                steering_angle = lane_angle_true * steering_ratio / 2.2
                 # print(steering_angle_true)
-                if steering_angle_true == 0:
-                  steering_angle_true = np.radians(0.01)
-                steering_radius = np.tan(np.radians(90)-steering_angle_true)*wheel_base_length
+                if lane_angle_true == 0:
+                  lane_angle_true = np.radians(0.1)
+                  
+                lane_radius = np.tan(np.radians(90)-lane_angle_true) * wheel_base_length
                 #draw the steering radius
                 pixel_to_meter = 70
                 #draw the circle representing the steering radius on a new frame and then add it to the original frame by transforming it using the M (inverse the perspective)
                 
                 
                 radius_frame = np.zeros((height, width, 3), np.uint8)
-                cv.circle(radius_frame, (int(center_lower_x_pos + (steering_radius*pixel_to_meter)), int(height)), int(abs(steering_radius*pixel_to_meter)), steering_color, int((right_line_lower_x_pos - left_line_lower_x_pos)-100))
+
+                cv.circle(radius_frame, (int(center_lower_x_pos + (lane_radius*pixel_to_meter)), int(height)), int(abs(lane_radius*pixel_to_meter)), steering_color, int((right_line_lower_x_pos - left_line_lower_x_pos)-100))
                 # cv.circle(radius_frame, (int(left_line_lower_x_pos + (steering_radius*pixel_to_meter)), int(height)), int(abs(steering_radius*pixel_to_meter)), left_lower_color, 10)
                 # cv.circle(radius_frame, (int(right_line_lower_x_pos + (steering_radius*pixel_to_meter)), int(height)), int(abs(steering_radius*pixel_to_meter)), right_lower_color, 10)
 
@@ -793,7 +797,7 @@ def main():
                 radius_frame = cv.addWeighted(radius_frame, 1, cv.warpPerspective(frame.copy(), M, (width, height)), 1, 0)
 
                 
-                wheel_angle =( np.degrees(lane_keeping_angle)*0.5 + np.degrees(steering_angle_true))
+                wheel_angle =lane_keeping_angle*0.1 + steering_angle
                 #if wheel_angle > 10, press the right arrow key, if wheel_angle < -10, press the left arrow key
                 # if wheel_angle > 10:
                 #   keyboard.press("d")
@@ -803,9 +807,7 @@ def main():
                 #   keyboard.release("q")
                   
 
-                print(f"{wheel_angle:.2f} - {steering_radius:.2f}m")
-
-                steering_angle = map(wheel_angle, -25, 25, -30, 30)
+                print(f"{wheel_angle:.2f} - {lane_radius:.2f}m")
 
                 joystick_pos = controller_input.steering_angle_to_joystick_pos(steering_angle)
 
@@ -860,11 +862,11 @@ def main():
                 steering_wheel_center = (int(width/2), int(height/3))
                 cv.circle(displayed_frame, steering_wheel_center, steering_wheel_size + int(steering_wheel_size/2 ),    steering_color   ,                         -1)
                 cv.circle(displayed_frame, steering_wheel_center, steering_wheel_size + int(steering_wheel_size/10), steering_wheel_color, int(steering_wheel_size/7))
-                cv.circle(displayed_frame, (int(steering_wheel_center[0] - (steering_wheel_size/6.5)*math.sin(math.radians(steering_angle))), int(steering_wheel_center[1] + (steering_wheel_size/6.5)*math.cos(math.radians(steering_angle)))), int(steering_wheel_size/2.2), steering_wheel_color, -1)
+                cv.circle(displayed_frame, (int(steering_wheel_center[0] - (steering_wheel_size/6.5)*math.sin(wheel_angle)), int(steering_wheel_center[1] + (steering_wheel_size/6.5)*math.cos(wheel_angle))), int(steering_wheel_size/2.2), steering_wheel_color, -1)
                 
-                cv.line(displayed_frame, steering_wheel_center, (int(steering_wheel_center[0]-steering_wheel_size*math.sin(math.radians(steering_angle))), int(steering_wheel_center[1]+steering_wheel_size*math.cos(math.radians(steering_angle)))), steering_wheel_color, int(steering_wheel_size/5))
-                steering_wheel_x_lenght = int(steering_wheel_size*math.cos(math.radians(steering_angle)))
-                steering_wheel_y_lenght = int(steering_wheel_size*math.sin(math.radians(steering_angle)))
+                cv.line(displayed_frame, steering_wheel_center, (int(steering_wheel_center[0]-steering_wheel_size*math.sin(wheel_angle)), int(steering_wheel_center[1]+steering_wheel_size*math.cos(wheel_angle))), steering_wheel_color, int(steering_wheel_size/5))
+                steering_wheel_x_lenght = int(steering_wheel_size*math.cos(wheel_angle))
+                steering_wheel_y_lenght = int(steering_wheel_size*math.sin(wheel_angle))
                 cv.line(displayed_frame, (steering_wheel_center[0]-steering_wheel_x_lenght, steering_wheel_center[1]-steering_wheel_y_lenght), (steering_wheel_center[0]+steering_wheel_x_lenght, steering_wheel_center[1]+steering_wheel_y_lenght), steering_wheel_color, int(steering_wheel_size/5))
 
                 
