@@ -402,7 +402,7 @@ def main():
 
     ## Video here
     # cap = cv.VideoCapture(1)
-    cap = cv.VideoCapture('Test drive\\07.19.2023\\2.MP4')
+    cap = cv.VideoCapture('Test drive\\2023.08.01\\2.MP4')
     
 
     while (cap.isOpened()):
@@ -768,7 +768,7 @@ def main():
                 cv.line(corected_frame, (int(center_lower_x_pos), height), (int(center_upper_x_pos), 0), (0, 0, 0), 3)
                 
                 lane_angle_true = np.arctan((center_upper_x_pos - center_lower_x_pos)/height)
-                steering_angle = lane_angle_true * steering_ratio / 2.2
+                steering_angle = lane_angle_true * steering_ratio / 3
                 # print(steering_angle_true)
                 if lane_angle_true == 0:
                   lane_angle_true = np.radians(0.1)
