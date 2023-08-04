@@ -859,7 +859,7 @@ def main():
                 
                 ## steering wheel (rotate with the steering angle) (made with 1 circle and 2 lines)
                 steering_wheel_size   = 35
-                steering_wheel_center = (int(width/2), int(height/3))
+                steering_wheel_center = (int(width/2), int(height/5))
                 cv.circle(displayed_frame, steering_wheel_center, steering_wheel_size + int(steering_wheel_size/2 ),    steering_color   ,                         -1)
                 cv.circle(displayed_frame, steering_wheel_center, steering_wheel_size + int(steering_wheel_size/10), steering_wheel_color, int(steering_wheel_size/7))
                 cv.circle(displayed_frame, (int(steering_wheel_center[0] - (steering_wheel_size/6.5)*math.sin(wheel_angle)), int(steering_wheel_center[1] + (steering_wheel_size/6.5)*math.cos(wheel_angle))), int(steering_wheel_size/2.2), steering_wheel_color, -1)
