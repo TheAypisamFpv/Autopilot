@@ -1,4 +1,4 @@
-<h3 align="center">Autopilot (latest version: AutopilotV6)</h3>
+<h1 align="center">Autopilot (latest version: AutopilotV6)</h1>
 
 ---
 
