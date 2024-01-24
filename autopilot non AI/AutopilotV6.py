@@ -32,7 +32,7 @@ car_settings = {
   "steering_ratio": 0,
   }
 
-with open('car settings\\aygo.txt', 'r') as file:
+with open('autopilot non AI\\car settings\\my_car.txt', 'r') as file:
   lines = file.readlines()
   if len(lines) != len(car_settings):
     raise Exception(f"The car settings file is not correct, {len(lines)} lines found instead of 7")
@@ -402,7 +402,7 @@ def main():
 
     ## Video here
     # cap = cv.VideoCapture(1)
-    cap = cv.VideoCapture('Test drive\\2023.08.01\\2.MP4')
+    cap = cv.VideoCapture('autopilot non AI\\Test drive\\2023.08.01\\2.MP4')
     
 
     while (cap.isOpened()):
