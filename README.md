@@ -13,34 +13,32 @@ A line is considered not detected when it is not visible or not stable enough to
     <br> 
 </p>
 
-## Images
-### Autopilot active
+# Images
+## Autopilot active
 
 <p align="center"> 
   <a href="" rel="noopener">
- <img width=853px height=468px src="https://github.com/TheAypisamFpv/Autopilot/blob/master/autopilot%20non%20AI/images/V6/autopilotV6%20active%201.png" alt="Autopilot active1"></a>
+ <img width=800px height=auto src="https://github.com/TheAypisamFpv/Autopilot/blob/master/autopilot%20non%20AI/images/V6/autopilotV6%20active%201.png" alt="Autopilot active1"></a>
 </p>
 <p align="center"> 
   <a href="" rel="noopener">
- <img width=853px height=465px src="https://github.com/TheAypisamFpv/Autopilot/blob/master/autopilot%20non%20AI/images/V6/autopilotV6%20active%202.png" alt="Autopilot active2"></a>
+ <img width=800px height=auto src="https://github.com/TheAypisamFpv/Autopilot/blob/master/autopilot%20non%20AI/images/V6/autopilotV6%20active%202.png" alt="Autopilot active2"></a>
 </p>
 
-### Lane prediction
+## Lane prediction
 <p align="center"> 
   <a href="" rel="noopener">
- <img width=853px height=468px src="https://github.com/TheAypisamFpv/Autopilot/blob/master/autopilot%20non%20AI/images/V6/autopilotV6%20lane%20prediction.png" alt="Lane prediction"></a>
+ <img width=800px height=auto src="https://github.com/TheAypisamFpv/Autopilot/blob/master/autopilot%20non%20AI/images/V6/autopilotV6%20lane%20prediction.png" alt="Lane prediction"></a>
 </p>
 
-### Lane departure warning
+## Lane departure warning
 <p align="center"> 
   <a href="" rel="noopener">
- <img width=853px height=468px src="https://github.com/TheAypisamFpv/Autopilot/blob/master/autopilot%20non%20AI/images/V6/autopilotV6%20lane%20departure.png" alt="lane departure warning"></a>
+ <img width=800px height=auto src="https://github.com/TheAypisamFpv/Autopilot/blob/master/autopilot%20non%20AI/images/V6/autopilotV6%20lane%20departure.png" alt="lane departure warning"></a>
 </p>
 
-### Autopilot unavailable
+## Autopilot unavailable
 <p align="center"> 
   <a href="" rel="noopener">
- <img width=853px height=468px src="https://github.com/TheAypisamFpv/Autopilot/blob/master/autopilot%20non%20AI/images/V6/autopilotV6%20unavailable.png" alt="Autopilot unavailable"></a>
+ <img width=800px height=auto src="https://github.com/TheAypisamFpv/Autopilot/blob/master/autopilot%20non%20AI/images/V6/autopilotV6%20unavailable.png" alt="Autopilot unavailable"></a>
 </p>
-
----
