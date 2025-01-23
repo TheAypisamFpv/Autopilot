@@ -3,3 +3,4 @@ Test drive/
 __pycache__/
 dataset/
 *.csv
+*.pt
