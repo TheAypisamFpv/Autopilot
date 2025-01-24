@@ -2,21 +2,13 @@ import cv2
 import os
 import random
 import numpy as np
-import collections
+from progressBar import getProgressBar
 
 # Constants
 VIDEO_DIR = 'D:/VS_Python_Project/Autopilot/Autopilot/autopilot non AI/Test drive'
-NORMALIZED_SIZE = (480, 360)  # 4:3 aspect ratio
+NORMALIZED_SIZE = (640, 480)
 DATASET_DIR = 'D:/VS_Python_Project/Autopilot/Autopilot/autopilot AI/dataset'
-SMOOTHING_WINDOW_SIZE = 10
-
-
-# Global variables
-drawing = False
-ix, iy = -1, -1
-xPositions = collections.deque(maxlen=SMOOTHING_WINDOW_SIZE)
-yPositions = collections.deque(maxlen=SMOOTHING_WINDOW_SIZE)
-pointA = None
+NUM_IMAGES = 100  # Number of images to create
 
 def getRandomFrame(videoPath: str):
     cap = cv2.VideoCapture(videoPath)
@@ -26,9 +18,9 @@ def getRandomFrame(videoPath: str):
     ret, frame = cap.read()
     cap.release()
     if ret:
-        return frame
+        return frame, randomFrame
     else:
-        return None
+        return None, None
 
 def getRandomVideoPath(directory: str):
     videos = []
@@ -37,109 +29,57 @@ def getRandomVideoPath(directory: str):
             if file.lower().endswith(('.mp4', '.avi', '.mov')):
                 videos.append(os.path.join(root, file))
     
-    print(f"loaded {len(videos)} video files")
+    # print(f"loaded {len(videos)} video files")
     return random.choice(videos) if videos else None
 
 def resizeImage(image, size):
     return cv2.resize(image, size)
 
-def smoothPosition(x, y):
-    xPositions.append(x)
-    yPositions.append(y)
-    smoothedX = sum(xPositions) // len(xPositions)
-    smoothedY = sum(yPositions) // len(yPositions)
-    return smoothedX, smoothedY
-
-def drawLaneLines(event, x, y, flags, param):
-    global ix, iy, drawing, pointA
-
-
-    if event == cv2.EVENT_LBUTTONDOWN or event == cv2.EVENT_RBUTTONDOWN:
-        if flags & cv2.EVENT_FLAG_CTRLKEY:
-            if pointA is None:
-                pointA = (x, y)
-            else:
-                cv2.line(param, pointA, (x, y), (255, 255, 255), 2)  # Draw line from point A to current point
-                pointA = None  # Reset point A
-        else:
-            drawing = True
-            ix, iy = x, y
-
-
-    elif event == cv2.EVENT_MOUSEMOVE:
-        x, y = smoothPosition(x, y)
-        
-        if pointA is not None:
-            temp_image = param.copy()
-            cv2.line(temp_image, pointA, (x, y), (255, 255, 255), 2)  # Draw preview line
-            cv2.imshow('image', temp_image)
-        elif drawing:
-            if flags & cv2.EVENT_FLAG_LBUTTON:
-                cv2.line(param, (ix, iy), (x, y), (255, 255, 255), 2)
-            elif flags & cv2.EVENT_FLAG_RBUTTON:
-                cv2.line(param, (ix, iy), (x, y), (0, 0, 0), 8)
-            ix, iy = x, y
-
-    x, y = smoothPosition(x, y)
-    
-            
-
-def saveImages(resizedFrame, laneLinesImage):
-    # if the lane lines image is empty, skip saving
-    if np.all(laneLinesImage == 0):
-        print("Lane lines image is empty. Skipping save.")
-        return
-    
+def saveImage(resizedFrame, folderName, videoName, frameId):
     if not os.path.exists(DATASET_DIR):
         os.makedirs(DATASET_DIR)
 
-    imageId = -1
-    # check if the imageId already exists
-    while os.path.exists(os.path.join(DATASET_DIR, f'{imageId}_OG.png')) or imageId == -1:
-        imageId = random.randint(1000, 9999)
-    
-    originalImagePath = os.path.join(DATASET_DIR, f'{imageId}_OG.png')
-    laneLinesImagePath = os.path.join(DATASET_DIR, f'{imageId}_LABELED.png')
-
-    cv2.imwrite(originalImagePath, resizedFrame)
-    cv2.imwrite(laneLinesImagePath, laneLinesImage)
-
-    print(f"Original image saved to {originalImagePath}")
-    print(f"Lane lines image saved to {laneLinesImagePath}")
+    imageName = f"{folderName}_{videoName}_{frameId}.png"
+    imagePath = os.path.join(DATASET_DIR, imageName)
+    cv2.imwrite(imagePath, resizedFrame)
+    # print(f"Original image saved to {imagePath}")
 
 def main():
+    print("Starting image generation...")
     while True:
+        existingImageCount = len([name for name in os.listdir(DATASET_DIR) if os.path.isfile(os.path.join(DATASET_DIR, name))])
+        if existingImageCount >= NUM_IMAGES:
+            break
+
         videoPath = getRandomVideoPath(VIDEO_DIR)
         if not videoPath:
             print("No video files found in the directory.")
             return
 
-        print(f"Selected video: {videoPath}")
-
-        frame = getRandomFrame(videoPath)
+        frame, frameId = getRandomFrame(videoPath)
         if frame is None:
             print("Failed to retrieve a frame from the video.")
-            return
+            continue
 
-        grayFrame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        resizedFrame = resizeImage(grayFrame, NORMALIZED_SIZE)
-        laneLinesImage = np.zeros_like(resizedFrame)
+        folderName = os.path.basename(os.path.dirname(videoPath))
+        videoName = os.path.splitext(os.path.basename(videoPath))[0]
 
-        cv2.namedWindow('image', cv2.WINDOW_NORMAL)
-        cv2.setMouseCallback('image', drawLaneLines, laneLinesImage)
+        # grayFrame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        resizedFrame = resizeImage(frame, NORMALIZED_SIZE)
+        saveImage(resizedFrame, folderName, videoName, frameId)
 
-        while True:
-            combinedImage = cv2.addWeighted(resizedFrame, 0.7, laneLinesImage, 0.3, 0)
-            cv2.imshow('image', combinedImage)
-            k = cv2.waitKey(1) & 0xFF
-            if k == 27:  # ESC key to quit the program
-                cv2.destroyAllWindows()
-                return
-            elif k == ord('q') or k == 13:  # 'q' key or ENTER key to finish current image and load next
-                saveImages(resizedFrame, laneLinesImage)
-                break
+        # Display progress bar
+        progress = existingImageCount / NUM_IMAGES
+        progressBar = getProgressBar(progress)
+        progressText = f"{existingImageCount}/{NUM_IMAGES}".ljust(10)
+        print(f"{progressText} {progressBar}", end='\r')
 
-        cv2.destroyAllWindows()
+    # Display progress bar
+    progress = existingImageCount / NUM_IMAGES
+    progressBar = getProgressBar(progress)
+    progressText = f"{existingImageCount}/{NUM_IMAGES}".ljust(10)
+    print(f"{progressText} {progressBar}", end='\r')
+    print("\nImage generation completed.")
 
 if __name__ == "__main__":
     main()
