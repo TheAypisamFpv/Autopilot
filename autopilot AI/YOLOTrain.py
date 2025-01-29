@@ -1,12 +1,12 @@
 from ultralytics import YOLO
 
 def trainModel():
-    model = YOLO("autopilot AI\yolo11m-seg.pt")
+    model = YOLO("autopilot AI\Yolo9_custom.pt")
 
     model.train(data="autopilot AI\dataset_custom.yaml",
                 imgsz=640,
                 batch=9,
-                epochs=200,
+                epochs=250,
                 workers=1,
                 device=0)
 
