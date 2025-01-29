@@ -402,7 +402,7 @@ def main():
 
     ## Video here
     # cap = cv.VideoCapture(1)
-    cap = cv.VideoCapture('autopilot non AI\\Test drive\\2023.08.01\\2.MP4')
+    cap = cv.VideoCapture(r'D:\VisualCode_Python\Autopilot\Autopilot\Test drive\31 03 2023\2.MP4')
     
 
     while (cap.isOpened()):
