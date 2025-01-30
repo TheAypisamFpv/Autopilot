@@ -1,3 +1,5 @@
 Test drive/
 .venv/
 __pycache__/
+runs/
+weights/
