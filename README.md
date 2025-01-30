@@ -18,9 +18,8 @@ It is trained on human-labeled images. Later I will try to integrate auto labeli
     <br> 
 </p>
 
-<p align="center"> 
-  <a href="" rel="noopener">
- <img width=800px height=auto src="https://github.com/TheAypisamFpv/Autopilot/blob/master/autopilot%20AI/images/val_batch0_labels.jpg" alt="Labeled images"></a>
+<p align="center">
+ <img width=800px height=auto src="https://github.com/TheAypisamFpv/Autopilot/blob/master/autopilot%20AI/images/val_batch0_labels.jpg" alt="Labeled images">
 </p>
 
 
@@ -28,9 +27,8 @@ It is trained on human-labeled images. Later I will try to integrate auto labeli
     <br>
 </p>
 
-<p align="center"> 
-  <a href="" rel="noopener">
- <img width=800px height=auto src="https://github.com/TheAypisamFpv/Autopilot/blob/master/autopilot%20AI/images/val_batch0_pred.jpg" alt="Predicted images"></a>
+<p align="center">
+ <img width=800px height=auto src="https://github.com/TheAypisamFpv/Autopilot/blob/master/autopilot%20AI/images/val_batch0_pred.jpg" alt="Predicted images">
 </p>
 
 <br>
@@ -49,29 +47,24 @@ A line is considered not detected when it is not visible or not stable enough to
 # Images
 ## Autopilot active
 
-<p align="center"> 
-  <a href="" rel="noopener">
- <img width=800px height=auto src="https://github.com/TheAypisamFpv/Autopilot/blob/master/autopilot%20non%20AI/images/V6/autopilotV6%20active%201.png" alt="Autopilot active1"></a>
+<p align="center">
+ <img width=800px height=auto src="https://github.com/TheAypisamFpv/Autopilot/blob/master/autopilot%20non%20AI/images/V6/autopilotV6%20active%201.png" alt="Autopilot active1">
 </p>
 <p align="center"> 
-  <a href="" rel="noopener">
- <img width=800px height=auto src="https://github.com/TheAypisamFpv/Autopilot/blob/master/autopilot%20non%20AI/images/V6/autopilotV6%20active%202.png" alt="Autopilot active2"></a>
+ <img width=800px height=auto src="https://github.com/TheAypisamFpv/Autopilot/blob/master/autopilot%20non%20AI/images/V6/autopilotV6%20active%202.png" alt="Autopilot active2">
 </p>
 
 ## Lane prediction
-<p align="center"> 
-  <a href="" rel="noopener">
- <img width=800px height=auto src="https://github.com/TheAypisamFpv/Autopilot/blob/master/autopilot%20non%20AI/images/V6/autopilotV6%20lane%20prediction.png" alt="Lane prediction"></a>
+<p align="center">
+ <img width=800px height=auto src="https://github.com/TheAypisamFpv/Autopilot/blob/master/autopilot%20non%20AI/images/V6/autopilotV6%20lane%20prediction.png" alt="Lane prediction">
 </p>
 
 ## Lane departure warning
 <p align="center"> 
-  <a href="" rel="noopener">
- <img width=800px height=auto src="https://github.com/TheAypisamFpv/Autopilot/blob/master/autopilot%20non%20AI/images/V6/autopilotV6%20lane%20departure.png" alt="lane departure warning"></a>
+ <img width=800px height=auto src="https://github.com/TheAypisamFpv/Autopilot/blob/master/autopilot%20non%20AI/images/V6/autopilotV6%20lane%20departure.png" alt="lane departure warning">
 </p>
 
 ## Autopilot unavailable
-<p align="center"> 
-  <a href="" rel="noopener">
- <img width=800px height=auto src="https://github.com/TheAypisamFpv/Autopilot/blob/master/autopilot%20non%20AI/images/V6/autopilotV6%20unavailable.png" alt="Autopilot unavailable"></a>
+<p align="center">
+ <img width=800px height=auto src="https://github.com/TheAypisamFpv/Autopilot/blob/master/autopilot%20non%20AI/images/V6/autopilotV6%20unavailable.png" alt="Autopilot unavailable">
 </p>
