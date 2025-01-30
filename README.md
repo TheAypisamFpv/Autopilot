@@ -22,7 +22,7 @@ Here are some examples of labeled images.
 ### Validation batch labeled images:
 
 <p align="center">
- <img width=800px height=auto src="https://github.com/TheAypisamFpv/Autopilot/tree/Autopilot-AI/images/val_batch0_labels.jpg" alt="Labeled images">
+ <img width=800px height=auto src="https://github.com/TheAypisamFpv/Autopilot/blob/Autopilot-AI/images/val_batch0_labels.jpg" alt="Labeled images">
 </p>
 
 <br>
@@ -30,5 +30,5 @@ Here are some examples of labeled images.
 ### Validation batch predicted images:
 
 <p align="center">
- <img width=800px height=auto src="https://github.com/TheAypisamFpv/Autopilot/tree/Autopilot-AI/images/val_batch0_pred.jpg" alt="Predicted images">
+ <img width=800px height=auto src="https://github.com/TheAypisamFpv/Autopilot/blob/Autopilot-AI/images/val_batch0_pred.jpg" alt="Predicted images">
 </p>
