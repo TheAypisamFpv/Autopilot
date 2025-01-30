@@ -5,6 +5,7 @@ dataset/
 dataset (deprecated)/
 train/
 val/
+runs/
 yoloDataset/
 *.csv
 yolov9c-seg.pt
