@@ -1,6 +1,0 @@
-train: D:\VS_Python_Project\Autopilot\Autopilot\autopilot AI\train
-val: D:\VS_Python_Project\Autopilot\Autopilot\autopilot AI\val
-
-nc: 3
-
-names: ["Drivable", "Obstacle", "RoadLines"]
