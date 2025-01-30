@@ -5,7 +5,7 @@ import cv2
 # Set the environment variable to increase read attempts
 os.putenv("OPENCV_FFMPEG_READ_ATTEMPTS", "32768")
 
-model = YOLO("autopilot AI\Yolo9_custom.pt")
+model = YOLO("autopilot AI\BestWeights\Yolo9_custom.pt")
 
 path = r"D:\VS_Python_Project\Autopilot\Autopilot\autopilot non AI\Test drive\2023.07.04\full.mp4"
 cap = cv2.VideoCapture(path)

@@ -7,4 +7,3 @@ train/
 val/
 yoloDataset/
 *.csv
-*.pt
