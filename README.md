@@ -18,20 +18,20 @@ A line is considered not detected when it is not visible or not stable enough to
  <img width=800px height=auto src="https://github.com/TheAypisamFpv/Autopilot/blob/Autopilot-no-AI/images/V6/autopilotV6%20active%201.png" alt="Autopilot active1">
 </p>
 <p align="center"> 
- <img width=800px height=auto src="https://github.com/TheAypisamFpv/Autopilot/tree/Autopilot-no-AI/images/V6/autopilotV6%20active%202.png" alt="Autopilot active2">
+ <img width=800px height=auto src="https://github.com/TheAypisamFpv/Autopilot/blob/Autopilot-no-AI/images/V6/autopilotV6%20active%202.png" alt="Autopilot active2">
 </p>
 
 ## Lane prediction
 <p align="center">
- <img width=800px height=auto src="https://github.com/TheAypisamFpv/Autopilot/tree/Autopilot-no-AI/images/V6/autopilotV6%20lane%20prediction.png" alt="Lane prediction">
+ <img width=800px height=auto src="https://github.com/TheAypisamFpv/Autopilot/blob/Autopilot-no-AI/images/V6/autopilotV6%20lane%20prediction.png" alt="Lane prediction">
 </p>
 
 ## Lane departure warning
 <p align="center"> 
- <img width=800px height=auto src="https://github.com/TheAypisamFpv/Autopilot/tree/Autopilot-no-AI/images/V6/autopilotV6%20lane%20departure.png" alt="lane departure warning">
+ <img width=800px height=auto src="https://github.com/TheAypisamFpv/Autopilot/blob/Autopilot-no-AI/images/V6/autopilotV6%20lane%20departure.png" alt="lane departure warning">
 </p>
 
 ## Autopilot unavailable
 <p align="center">
- <img width=800px height=auto src="https://github.com/TheAypisamFpv/Autopilot/tree/Autopilot-no-AI/images/V6/autopilotV6%20unavailable.png" alt="Autopilot unavailable">
+ <img width=800px height=auto src="https://github.com/TheAypisamFpv/Autopilot/blob/Autopilot-no-AI/images/V6/autopilotV6%20unavailable.png" alt="Autopilot unavailable">
 </p>
