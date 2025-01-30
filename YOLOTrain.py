@@ -1,9 +1,9 @@
 from ultralytics import YOLO
 
 def trainModel():
-    model = YOLO("autopilot AI\Yolo9_custom.pt")
+    model = YOLO("Yolo9_custom.pt")
 
-    model.train(data="autopilot AI\dataset_custom.yaml",
+    model.train(data="dataset_custom.yaml",
                 imgsz=640,
                 batch=9,
                 epochs=250,

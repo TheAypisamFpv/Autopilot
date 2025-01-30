@@ -7,7 +7,7 @@ os.putenv("OPENCV_FFMPEG_READ_ATTEMPTS", "32768")
 
 model = YOLO("autopilot AI\BestWeights\Yolo9_custom.pt")
 
-path = r"D:\VS_Python_Project\Autopilot\Autopilot\autopilot non AI\Test drive\2023.07.04\full.mp4"
+path = r"D:\VS_Python_Project\Autopilot\Autopilot\Test drive\2023.07.04\full.mp4"
 cap = cv2.VideoCapture(path)
 
 if not cap.isOpened():

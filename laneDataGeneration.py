@@ -5,9 +5,9 @@ import numpy as np
 from progressBar import getProgressBar
 
 # Constants
-VIDEO_DIR = 'D:/VS_Python_Project/Autopilot/Autopilot/autopilot non AI/Test drive'
+VIDEO_DIR = 'D:/VS_Python_Project/Autopilot/Autopilot/Test drive'
 NORMALIZED_SIZE = (640, 480)
-DATASET_DIR = 'D:/VS_Python_Project/Autopilot/Autopilot/autopilot AI/dataset'
+DATASET_DIR = 'D:/VS_Python_Project/Autopilot/Autopilot/dataset'
 NUM_IMAGES = 100  # Number of images to create
 
 def getRandomFrame(videoPath: str):
