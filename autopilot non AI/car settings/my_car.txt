@@ -1,8 +1,0 @@
-lane_center:0
-car_hood:80
-lower_lane_width:200
-detection_distance:100
-distance_center:5
-distance_width:220
-wheel_base_length:2.34
-steering_ratio:13.4
