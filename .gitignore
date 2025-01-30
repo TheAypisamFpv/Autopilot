@@ -3,7 +3,7 @@ Test drive/
 __pycache__/
 dataset/
 dataset (deprecated)/
-train/
+weights/
 val/
 yoloDataset/
 *.csv
