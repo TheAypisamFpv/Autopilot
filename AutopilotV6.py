@@ -32,7 +32,7 @@ car_settings = {
   "steering_ratio": 0,
   }
 
-with open('autopilot non AI\\car settings\\my_car.txt', 'r') as file:
+with open('car settings\\my_car.txt', 'r') as file:
   lines = file.readlines()
   if len(lines) != len(car_settings):
     raise Exception(f"The car settings file is not correct, {len(lines)} lines found instead of 7")
