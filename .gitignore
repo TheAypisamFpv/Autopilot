@@ -1,10 +1,3 @@
 Test drive/
 .venv/
 __pycache__/
-dataset/
-dataset (deprecated)/
-train/
-val/
-yoloDataset/
-*.csv
-yolov9c-seg.pt
