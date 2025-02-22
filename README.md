@@ -3,7 +3,7 @@
 Uses `YoloV9c-seg` to detect `drivable surfaces`, `lines` and `obstacles`.
 It is trained on human-labeled images. Later I will try to integrate auto labeling.
 
-Best Weights <a href="https://github.com/TheAypisamFpv/Autopilot/blob/Autopilot-AI/Best%20Weights/Yolo9_custom.pt" rel="noopener">here</a>
+Best Weights <a href="https://github.com/TheAypisamFpv/Autopilot/blob/Autopilot-AI/BestWeights/Yolo9_custom.pt" rel="noopener">here</a>
     <br>
 
 # Images

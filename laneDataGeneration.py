@@ -5,9 +5,9 @@ import numpy as np
 from progressBar import getProgressBar
 
 # Constants
-VIDEO_DIR = 'D:/VS_Python_Project/Autopilot/Autopilot/Test drive'
+VIDEO_DIR = 'Test drive'
 NORMALIZED_SIZE = (640, 480)
-DATASET_DIR = 'D:/VS_Python_Project/Autopilot/Autopilot/dataset'
+DATASET_DIR = 'dataset/'
 NUM_IMAGES = 100  # Number of images to create
 
 def getRandomFrame(videoPath: str):
@@ -46,6 +46,10 @@ def saveImage(resizedFrame, folderName, videoName, frameId):
 
 def main():
     print("Starting image generation...")
+    # if dataset directory does not exist, create it
+    if not os.path.exists(DATASET_DIR):
+        os.makedirs(DATASET_DIR)
+    
     while True:
         existingImageCount = len([name for name in os.listdir(DATASET_DIR) if os.path.isfile(os.path.join(DATASET_DIR, name))])
         if existingImageCount >= NUM_IMAGES:
