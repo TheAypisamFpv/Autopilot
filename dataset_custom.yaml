@@ -1,6 +1,6 @@
-train: D:\VS_Python_Project\Autopilot\Autopilot\train
-val: D:\VS_Python_Project\Autopilot\Autopilot\val
+train: D:\VS_Python_Project\Autopilot\Autopilot\dataset\labeledImages\train
+val: D:\VS_Python_Project\Autopilot\Autopilot\dataset\labeledImages\val
 
 nc: 3
 
-names: ["Drivable", "Obstacle", "RoadLines"]
+names: ["LeadingCar", "Obstacles", "PredictedPath"]
