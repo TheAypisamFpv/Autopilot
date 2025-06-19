@@ -1,34 +1,38 @@
-# Autopilot AI (YoloV9)
+# Custom Multi-Modal
 
-Uses `YoloV9c-seg` to detect `drivable surfaces`, `lines` and `obstacles`.
-It is trained on human-labeled images. Later I will try to integrate auto labeling.
+An advanced vehicle trajectory prediction system leveraging deep learning to forecast vehicle path over a 5-second horizon based on visual input and GPS data.
 
-Best Weights <a href="https://github.com/TheAypisamFpv/Autopilot/blob/Autopilot-AI/BestWeights/Yolo9_custom.pt" rel="noopener">here</a>
-    <br>
 
-# Images
-## Labeled images
+## Overview
 
-Here are some examples of labeled images.
+This project implements a multi-modal network that predicts the future trajectory of the vehicle using:
+- 2 RGB images from a front-facing GoPro camera (224x224x3 pixels, both images are separated by a small time interval for temporal context)
+- 3 scalar values derived from real-time GPS:
+    - Speed (m/s)
+    - Acceleration (m/s²)
+    - Turn rate (deg/s)
 
-- `Drivable surfaces` are sections of the road where the car should drive, like right hand side of non mark roads, or between the lines on a road with lines.
+The model outputs 10 two-dimensional vectors representing the predicted travel distance (x, y) in the 2D road plane for each 0.5-second interval.
 
-- `Lines` are the lines on the road, like the white lines on the side of the road or the yellow lines in case of construction work or the edge of the road.
+## Data Visualization
 
-- `Obstacles` are objects that the car should avoid, like cars, pedestrians, or "real" obstacles like cones or road signs.
+The following visualization shows an example of processed GPS data used for training and evaluation:
 
-<br>
+![GPS Data Visualization](images/visualization/dataVis.png)
 
-### Validation batch labeled images:
+## Model Architecture
 
-<p align="center">
- <img width=800px height=auto src="https://github.com/TheAypisamFpv/Autopilot/blob/Autopilot-AI/images/val_batch0_labels.jpg" alt="Labeled images">
-</p>
+The network uses a multi-modal input approach with two processing branches that are fused to make accurate trajectory predictions:
 
-<br>
+PDF version of the architecture diagram can be found [here](model\architecture\model_architecture.pdf).
 
-### Validation batch predicted images:
+![Model Architecture](model/architecture/modelArchitecture.mmd.png)
 
-<p align="center">
- <img width=800px height=auto src="https://github.com/TheAypisamFpv/Autopilot/blob/Autopilot-AI/images/val_batch0_pred.jpg" alt="Predicted images">
-</p>
+
+
+## Dataset
+
+.mp4 video files with extracted GPS data from a GoPro hero 5.
+
+## Training
+You'll have to wait, sorry.

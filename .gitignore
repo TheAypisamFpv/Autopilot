@@ -1,10 +1,8 @@
-Test drive/
+Test_drive/
 .venv/
 __pycache__/
-dataset/
-dataset (deprecated)/
-weights/
-val/
-yoloDataset/
-*.csv
-yolov9c-seg.pt
+*.aux
+*.fdb_latexmk
+*.fls
+*.gz
+*.log
