@@ -2,7 +2,7 @@
 
 ### Overview
 
-This repository contains two versions of the Autopilot system:
+This repository contains three versions of the Autopilot system:
 
 - **Autopilot Custom Model**: Uses a custom multi-modal network to predicts the future trajectory of the vehicle based on visual input and GPS data (speed, acceleration and turn rate).
 
