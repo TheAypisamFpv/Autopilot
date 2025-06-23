@@ -1,6 +1,7 @@
-Test_drive/
 .venv/
 __pycache__/
+Test_drive/
+dataset/output*/
 *.aux
 *.fdb_latexmk
 *.fls
