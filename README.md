@@ -24,7 +24,7 @@ The following visualization shows an example of processed GPS data used for trai
 
 The network uses a multi-modal input approach with two processing branches that are fused to make accurate trajectory predictions:
 
-PDF version of the architecture diagram can be found [here](model\architecture\model_architecture.pdf).
+PDF version of the architecture diagram can be found [here](model/architecture/model_architecture.pdf).
 
 ![Model Architecture](model/architecture/modelArchitecture.mmd.png)
 
