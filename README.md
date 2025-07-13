@@ -70,7 +70,8 @@ Updated parameters count from 17M to 23M, with an improved image processing and 
 10 days of training, for... garbage, val loss is low, but the generalization is bad
 
 ![run9_plot](training/run9/loss_plot.png)
-(only the model with the lowest val loss is saved)
+
+(only the model with the lowest val loss is saved obviously)
 
 ## Q&A
 
