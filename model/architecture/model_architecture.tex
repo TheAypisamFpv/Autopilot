@@ -6,75 +6,90 @@
 \begin{document}
 
 \section*{Introduction}
-This model is a specific 22.1M parameters Multimodal Neural Network design to predict the future 3s trajectory of a vehicle. It processes visual data from two images with a temporal gap of 0.1s, along with vehicle dynamics (speed, acceleration, and turn rate) derived from GPS data. The model outputs a sequence of 12 displacement vectors representing the future 3s vehicle's path.
+This model is a multimodal neural network designed to predict the future 3s trajectory of a vehicle. It processes visual data from two consecutive images with a temporal gap of 0.1s, along with vehicle speed derived from GPS data. The model outputs a sequence of 6 displacement vectors representing the future vehicle's path over 3 seconds.
 
 \section{Model Architecture}
 
 
 \begin{enumerate}
-    \item \textbf{Image Processing Branch (Convolutional Backbone with Cross-Processing for Two Images)}:
+    \item \textbf{Image Processing Branch}:
     \begin{itemize}
-        \item \textbf{Layer 1}: Convolutional layer with 64 filters, kernel size $3 \times 3$, ReLU activation, input shape $(480, 270, 3)$, applied to the first image.
-        \item \textbf{Layer 2}: Batch normalization.
-        \item \textbf{Layer 3}: Max-pooling layer with $2 \times 2$ pool size.
-        \item \textbf{Layer 4}: Convolutional layer with 128 filters, kernel size $3 \times 3$, ReLU activation.
-        \item \textbf{Layer 5}: Batch normalization.
-        \item \textbf{Layer 6}: Convolutional layer with 64 filters, kernel size $3 \times 3$, ReLU activation, input shape $(480, 270, 3)$, applied to the second image (shared weights with Layers 1--5).
-        \item \textbf{Layer 7}: Batch normalization.
-        \item \textbf{Layer 8}: Max-pooling layer with $2 \times 2$ pool size.
-        \item \textbf{Layer 9}: Convolutional layer with 128 filters, kernel size $3 \times 3$, ReLU activation.
-        \item \textbf{Layer 10}: Batch normalization.
-        \item \textbf{Layer 11}: Cross-attention layer, where feature maps from the first image (from Layer 5, $240 \times 135 \times 128$) attend to feature maps from the second image (from Layer 10, $240 \times 135 \times 128$), and vice versa, producing enhanced feature maps for each image ($240 \times 135 \times 128$).
-        \item \textbf{Layer 12}: Max-pooling layer with $2 \times 2$ pool size, applied to the first image’s enhanced feature maps.
-        \item \textbf{Layer 13}: Convolutional layer with 256 filters, kernel size $3 \times 3$, ReLU activation.
-        \item \textbf{Layer 14}: Batch normalization.
-        \item \textbf{Layer 15}: Convolutional layer with 256 filters, kernel size $3 \times 3$, ReLU activation.
-        \item \textbf{Layer 16}: Batch normalization.
-        \item \textbf{Layer 17}: Max-pooling layer with $2 \times 2$ pool size, applied to the second image’s enhanced feature maps.
-        \item \textbf{Layer 18}: Convolutional layer with 256 filters, kernel size $3 \times 3$, ReLU activation.
-        \item \textbf{Layer 19}: Batch normalization.
-        \item \textbf{Layer 20}: Convolutional layer with 256 filters, kernel size $3 \times 3$, ReLU activation.
-        \item \textbf{Layer 21}: Batch normalization.
-        \item \textbf{Layer 22}: Cross-attention layer, where feature maps from the first image (from Layer 16, $120 \times 67 \times 256$) attend to feature maps from the second image (from Layer 21, $120 \times 67 \times 256$), and vice versa, producing enhanced feature maps ($120 \times 67 \times 256$).
-        \item \textbf{Layer 23}: Max-pooling layer with $2 \times 2$ pool size, applied to the first image’s enhanced feature maps.
-        \item \textbf{Layer 24}: Convolutional layer with 512 filters, kernel size $3 \times 3$, ReLU activation.
-        \item \textbf{Layer 25}: Batch normalization.
-        \item \textbf{Layer 26}: Convolutional layer with 512 filters, kernel size $3 \times 3$, ReLU activation.
-        \item \textbf{Layer 27}: Batch normalization.
-        \item \textbf{Layer 28}: Max-pooling layer with $2 \times 2$ pool size, applied to the second image’s enhanced feature maps.
-        \item \textbf{Layer 29}: Convolutional layer with 512 filters, kernel size $3 \times 3$, ReLU activation.
-        \item \textbf{Layer 30}: Batch normalization.
-        \item \textbf{Layer 31}: Convolutional layer with 512 filters, kernel size $3 \times 3$, ReLU activation.
-        \item \textbf{Layer 32}: Batch normalization.
-        \item \textbf{Layer 33}: Concatenation layer to merge the feature maps from both images (e.g., combining two $60 \times 33 \times 512$ feature maps into $60 \times 33 \times 1024$).
-        \item \textbf{Layer 34}: Convolutional layer with 1024 filters, kernel size $3 \times 3$, ReLU activation, applied to the concatenated feature maps.
-        \item \textbf{Layer 35}: Global Average Pooling layer to vectorize the feature maps from the previous layer into a 1024-dimensional vector.
+        \item \textbf{Convolutional Block 1}:
+        \begin{itemize}
+            \item Conv2D: 64 filters, $3 \times 3$ kernel, padding=1, ReLU activation
+            \item BatchNorm2D
+            \item Conv2D: 64 filters, $3 \times 3$ kernel, padding=1, ReLU activation
+            \item BatchNorm2D
+            \item MaxPool2D: $2 \times 2$ 
+        \end{itemize}
+        
+        \item \textbf{Convolutional Block 2}:
+        \begin{itemize}
+            \item Conv2D: 128 filters, $3 \times 3$ kernel, padding=1, ReLU activation
+            \item BatchNorm2D
+            \item Conv2D: 128 filters, $3 \times 3$ kernel, padding=1, ReLU activation
+            \item BatchNorm2D
+            \item MaxPool2D: $2 \times 2$ 
+        \end{itemize}
+        
+        \item \textbf{Convolutional Block 3}:
+        \begin{itemize}
+            \item Conv2D: 256 filters, $3 \times 3$ kernel, padding=1, ReLU activation
+            \item BatchNorm2D
+            \item Conv2D: 256 filters, $3 \times 3$ kernel, padding=1, ReLU activation
+            \item BatchNorm2D
+            \item Conv2D: 256 filters, $3 \times 3$ kernel, padding=1, ReLU activation
+            \item BatchNorm2D
+            \item MaxPool2D: $2 \times 2$ 
+        \end{itemize}
+        
+        \item \textbf{Convolutional Block 4}:
+        \begin{itemize}
+            \item Conv2D: 512 filters, $3 \times 3$ kernel, padding=1, ReLU activation
+            \item BatchNorm2D
+            \item Conv2D: 512 filters, $3 \times 3$ kernel, padding=1, ReLU activation
+            \item BatchNorm2D
+            \item Conv2D: 512 filters, $3 \times 3$ kernel, padding=1, ReLU activation
+            \item BatchNorm2D
+        \end{itemize}
+        
+        \item \textbf{Spatial Attention}:
+        \begin{itemize}
+            \item Conv2D: 1 filter, $1 \times 1$ kernel, Sigmoid activation
+            \item Attention application through element-wise multiplication
+        \end{itemize}
+        
+        \item \textbf{Feature Concatenation}:
+        \begin{itemize}
+            \item Concatenate features from both images (creating a 1024-channel feature map)
+        \end{itemize}
+        
+        \item \textbf{Final Convolutional Processing}:
+        \begin{itemize}
+            \item Conv2D: 1024 filters, $3 \times 3$ kernel, padding=1, ReLU activation
+            \item Conv2D: 1024 filters, $1 \times 1$ kernel, ReLU activation
+            \item Global Average Pooling to create a 1024-dimensional vector
+        \end{itemize}
     \end{itemize}
 
-    \item \textbf{Dynamic Input Processing Branch (Speed, Acceleration, Turn Rate)}:
+    \item \textbf{Dynamic Input Processing Branch} (processes vehicle speed):
     \begin{itemize}
-        \item \textbf{Layer 36}: Dense layer with 32 units, ReLU activation, input shape $(3)$.
-        \item \textbf{Layer 37}: Batch normalization.
+        \item Dense layer with 32 units, Tanh activation, input dimension 1
+        \item Batch normalization
     \end{itemize}
 
-    \item \textbf{Feature Fusion}:
+    \item \textbf{Feature Fusion and Fully Connected Layers}:
     \begin{itemize}
-        \item \textbf{Layer 38}: Concatenation layer to merge the vectorized image features (from Layer 35) and the processed dynamic features (from Layer 37), producing a fused feature vector of size 1056.
-    \end{itemize}
-
-    \item \textbf{Fully Connected Layers}:
-    \begin{itemize}
-        \item \textbf{Layer 39}: Dense layer with 2048 units, ReLU activation.
-        \item \textbf{Layer 40}: Dropout layer with 0.5 dropout rate.
-        \item \textbf{Layer 41}: Dense layer with 512 units, ReLU activation.
-        \item \textbf{Layer 42}: Dropout layer with 0.5 dropout rate.
-        \item \textbf{Layer 43}: Dense layer with 128 units, ReLU activation.
-    \end{itemize}
-
-    \item \textbf{Output Layer}:
-    \begin{itemize}
-        \item \textbf{Layer 44}: Dense layer with 24 units, linear activation.
-        \item \textbf{Layer 45}: Reshape layer to format the output as a tensor of shape $(12, 2)$.
+        \item Concatenation of image features (1024) and dynamic features (32)
+        \item Dense layer with 2048 units, ReLU activation
+        \item Dropout (0.5)
+        \item Dense layer with 1024 units, ReLU activation
+        \item Dropout (0.5)
+        \item Dense layer with 512 units, ReLU activation
+        \item Dropout (0.3)
+        \item Dense layer with 128 units, ReLU activation
+        \item Dense layer with 12 units (output)
+        \item Reshape to $(6, 2)$ format - representing 6 vectors with x,y coordinates
     \end{itemize}
 \end{enumerate}
 \end{document}

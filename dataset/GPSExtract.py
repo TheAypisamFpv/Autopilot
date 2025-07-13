@@ -130,6 +130,11 @@ def extractGpsData(videoPath: str):
     
     # Second pass: Calculate heading based on points in the past AND future
     for i in range(len(gpsPoints)):
+        # If speed is less than 2.5 kph (0.69 m/s), use the last heading (can't turn if stationary)
+        if  gpsPoints[i]['speed2d'] < 0.69:
+            gpsPoints[i]['heading'] = gpsPoints[i-1].get('heading', 0) if i > 0 else 0
+            continue
+            
         # Set minimum distance threshold based on GPS accuracy
         minDistance = gpsPoints[i].get('accuracy', 2.0)*2 # Default to 4m if accuracy is not available
         
@@ -225,42 +230,78 @@ def extractGpsData(videoPath: str):
             # If no suitable points found, use previous heading or default to 0
             gpsPoints[i]['heading'] = gpsPoints[i-1].get('heading', 0) if i > 0 else 0
 
-    print(".", end='')
-
-    # Third pass: Calculate instantaneous turn rates
+    # Third pass: Calculate instantaneous turn rates and acceleration
     instantaneousTurnRates = [0] * len(gpsPoints)
     for i in range(1, len(gpsPoints)):
         if (gpsPoints[i]['timestamp'] - recordingStartTime).total_seconds() < 1.0:
             continue
 
+        # Calculate turn rate
         heading1 = gpsPoints[i-1]['heading']
         heading2 = gpsPoints[i]['heading']
         headingChange = heading2 - heading1
         if headingChange > 180: headingChange -= 360
         elif headingChange < -180: headingChange += 360
+        
+        # Time difference between consecutive points
         timeDiff = (gpsPoints[i]['timestamp'] - gpsPoints[i-1]['timestamp']).total_seconds()
+        
         if timeDiff > 0:
+            # Calculate turn rate
             instantaneousTurnRates[i] = headingChange / timeDiff
+            
+            # Calculate acceleration (m/s²) from speed difference
+            speedDiff = gpsPoints[i]['speed2d'] - gpsPoints[i-1]['speed2d']
+            gpsPoints[i]['acceleration'] = speedDiff / timeDiff
+        else:
+            # Default acceleration if time difference is zero
+            gpsPoints[i]['acceleration'] = 0.0
 
-    # Fourth pass: Average turn rates over a symmetric rolling window (+/- 0.5s)
+
+    print(".", end='')    
+    
+    # Default acceleration for the first point
+    gpsPoints[0]['acceleration'] = 0.0    # Fourth pass: Average turn rates and accelerations over a symmetric rolling window (+/- 0.5s)
     averagedTurnRates = [0] * len(gpsPoints)
+    averagedAccelerations = [0] * len(gpsPoints)
+    
     for i in range(len(gpsPoints)):
         startTimeWindow = gpsPoints[i]['timestamp'] - timedelta(seconds=0.5)
-        endTimeWindow = gpsPoints[i]['timestamp'] + timedelta(seconds=0.5)
+        endTimeWindow = gpsPoints[i]['timestamp']
         
-        ratesInWindow = [rate for k, rate in enumerate(instantaneousTurnRates) 
-                         if startTimeWindow <= gpsPoints[k]['timestamp'] <= endTimeWindow]
-
+        # Collect points within the time window
+        pointsInWindow = []
+        for k in range(len(gpsPoints)):
+            if startTimeWindow <= gpsPoints[k]['timestamp'] <= endTimeWindow:
+                pointsInWindow.append(k)
+        
+        # Average turn rates in window
+        ratesInWindow = [instantaneousTurnRates[k] for k in pointsInWindow]
         if ratesInWindow:
             averagedTurnRates[i] = sum(ratesInWindow) / len(ratesInWindow)
 
+        # Average accelerations in window
+        accelsInWindow = [gpsPoints[k].get('acceleration', 0.0) for k in pointsInWindow if k > 0]  # Skip first point
+        if accelsInWindow:
+            averagedAccelerations[i] = sum(accelsInWindow) / len(accelsInWindow)
+            
     print(".", end='\r')
-    # Fifth pass: Smooth the turn rate and add max speed
+    # Fifth pass: Apply additional smoothing to turn rate and acceleration, then add max speed
     for i in range(len(gpsPoints)):
+        # Apply further smoothing with a 3-point moving average
         if i > 0 and i < len(gpsPoints) - 1:
+            # Smooth turn rate
             gpsPoints[i]['turnRate'] = (averagedTurnRates[i-1] + averagedTurnRates[i] + averagedTurnRates[i+1]) / 3
+            
+            # Smooth acceleration
+            smoothedAccel = (averagedAccelerations[i-1] + averagedAccelerations[i] + averagedAccelerations[i+1]) / 3
+            
+            # Apply additional clamping to acceleration to reduce extreme values
+            gpsPoints[i]['acceleration'] = max(min(smoothedAccel, 3.0), -3.0)
         else:
             gpsPoints[i]['turnRate'] = averagedTurnRates[i]
+            gpsPoints[i]['acceleration'] = max(min(averagedAccelerations[i], 3.0), -3.0)
+        
         gpsPoints[i]['maxSpeed'] = maxSpeed
         gpsPoints[i]['timestamp'] = gpsPoints[i]['timestamp'].isoformat()
 
@@ -271,23 +312,21 @@ def extractGpsData(videoPath: str):
 
     print(f'Extracting GPS data from "{videoPath}" Done.')
 
-def main():
-    parser = argparse.ArgumentParser(description='Extract GPS data from GoPro MP4 files.')
-    parser.add_argument('path', help='Path to a video file or a directory containing video files.')
-    args = parser.parse_args()
+def main(path:str):
 
-    if os.path.isdir(args.path):
-        print(f"Processing all MP4 files in directory: {args.path}...\n")
-        for file in os.listdir(args.path):
+    if os.path.isdir(path):
+        print(f"Processing all MP4 files in directory: {path}...\n")
+        for file in os.listdir(path):
             if file.lower().endswith('.mp4'):
-                videoPath = os.path.join(args.path, file)
+                videoPath = os.path.join(path, file)
                 extractGpsData(videoPath)
                 print()
                 
-    elif os.path.isfile(args.path) and args.path.lower().endswith('.mp4'):
-        extractGpsData(args.path)
+    elif os.path.isfile(path) and path.lower().endswith('.mp4'):
+        extractGpsData(path)
     else:
-        print(f"Error: The path '{args.path}' is not a valid MP4 file or directory.")
+        print(f"Error: The path '{path}' is not a valid MP4 file or directory.")
 
 if __name__ == "__main__":
-    main()
+    path = r"F:\VS_Python_Project\Autopilot\Autopilot\Test_drive\2025.06.25"
+    main(path)

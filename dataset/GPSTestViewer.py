@@ -144,24 +144,31 @@ def main(videoPath:str = None):
         putTextWithOutline(resizedFrame, f"Longitude: {currentLon:.6f}", 
                     (textX, textYStart + 2 * lineHeight), font, fontScale, fontColor, lineType)
         # Altitude
-        putTextWithOutline(resizedFrame, f"Altitude: {currentGpsPoint['altitude']:.2f} m", 
+        putTextWithOutline(resizedFrame, f"Altitude: {currentGpsPoint['altitude']:.1f} m", 
                     (textX, textYStart + 3 * lineHeight), font, fontScale, fontColor, lineType)
         # Speed 2D
         speed2dKph = currentGpsPoint['speed2d'] * 3.6
-        putTextWithOutline(resizedFrame, f"Speed (2D): {currentGpsPoint['speed2d']:.2f} m/s ({speed2dKph:.0f} km/h)", 
+        putTextWithOutline(resizedFrame, f"Speed (2D): {currentGpsPoint['speed2d']:.1f} m/s ({speed2dKph:.1f} km/h)", 
                     (textX, textYStart + 4 * lineHeight), font, fontScale, fontColor, lineType)
         # Speed 3D
         speed3dKph = currentGpsPoint['speed3d'] * 3.6
-        putTextWithOutline(resizedFrame, f"Speed (3D): {currentGpsPoint['speed3d']:.2f} m/s ({speed3dKph:.0f} km/h)", 
+        putTextWithOutline(resizedFrame, f"Speed (3D): {currentGpsPoint['speed3d']:.1f} m/s ({speed3dKph:.1f} km/h)", 
                     (textX, textYStart + 5 * lineHeight), font, fontScale, fontColor, lineType)
+
+        # Acceleration
+        acceleration = currentGpsPoint.get('acceleration', 0)
+        accelerationKph2 = acceleration * 3.6  # Convert m/s^2 to km/h^2
+        putTextWithOutline(resizedFrame, f"Acceleration: {acceleration:.1f} m.s-2 ({accelerationKph2:.1f} km.h-2)",
+                    (textX, textYStart + 6 * lineHeight), font, fontScale, fontColor, lineType)
+
         # Heading
         heading = currentGpsPoint.get('heading', 0)
-        putTextWithOutline(resizedFrame, f"Heading: {heading:.2f} degrees",
-                    (textX, textYStart + 6 * lineHeight), font, fontScale, fontColor, lineType)
+        putTextWithOutline(resizedFrame, f"Heading: {heading:.0f} deg",
+                    (textX, textYStart + 7 * lineHeight), font, fontScale, fontColor, lineType)
         # Turn Rate
         turnRateDisplay = currentGpsPoint.get('turnRate', 0)
-        putTextWithOutline(resizedFrame, f"Turn Rate: {turnRateDisplay:.2f} deg/s",
-                    (textX, textYStart + 7 * lineHeight), font, fontScale, fontColor, lineType)
+        putTextWithOutline(resizedFrame, f"Turn Rate: {turnRateDisplay:.0f} deg/s",
+                    (textX, textYStart + 8 * lineHeight), font, fontScale, fontColor, lineType)
                       # --- Draw Future Path (Tentacle) on a Separate Frame and Warp it ---
         # Frame dimensions
         frameHeight, frameWidth, _ = resizedFrame.shape
@@ -170,9 +177,9 @@ def main(videoPath:str = None):
         tentacleFrame = np.zeros((frameHeight, frameWidth, 4), dtype=np.uint8)  # RGBA
         
         # Vector origin (bottom center)
-        originX = frameWidth // 2
-        originY = frameHeight - 150
         vectorWidth = 10
+        originX = frameWidth // 2
+        originY = frameHeight - vectorWidth
         
         # Number of future points to find (1 point -> 0.5 second into the future)
         numPoints = 6  # 3 seconds into the future
@@ -232,6 +239,9 @@ def main(videoPath:str = None):
             a = math.sin(dlat/2)**2 + math.cos(lat1) * math.cos(lat2) * math.sin(dlon/2)**2
             c = 2 * math.atan2(math.sqrt(a), math.sqrt(1-a))
             distance = earthRadius * c  # Distance in meters
+
+            if distance <= 1:
+                distance = max(0, 3*distance-2)
             
             # Calculate bearing to the future point
             x = math.sin(dlon) * math.cos(lat2)
@@ -275,9 +285,9 @@ def main(videoPath:str = None):
         verticalShift = -0.02 * frameHeight  # Shift the tentacle up by 2% of the frame height
 
         tentacleWidth = 0.05 * frameWidth
-        tentacleStartHeight = 0.836 * frameHeight
+        tentacleStartHeight = 1 * frameHeight
         bottomMargin = 0.03289 * frameHeight
-        topMargin = 0.26 * frameHeight
+        topMargin = 0.18 * frameHeight
 
         srcPts = np.float32([
             [frameWidth/2 - tentacleWidth, tentacleStartHeight - bottomMargin + verticalShift],   # Bottom left
@@ -291,8 +301,8 @@ def main(videoPath:str = None):
             cv2.circle(tentacleFrame, tuple(pt.astype(int)), 5, (255, 0, 0), -1)
 
 
-        topWidth = frameWidth * 0.077 # 15% of the frame width
-        topHeight = frameHeight * 0.68 # higher is lower on the screen
+        topWidth = frameWidth * 0.10 # 15% of the frame width
+        topHeight = frameHeight * 0.7 # higher is lower on the screen
 
         # margins
         bottomHorizontalMargin = 0.075 * frameWidth  # 5% of the frame width
@@ -352,5 +362,5 @@ def main(videoPath:str = None):
     cv2.destroyAllWindows()
 
 if __name__ == "__main__":
-    videoPath = r"D:\VS_Python_Project\Autopilot\Autopilot\Test_drive\2025.06.19\GP045961.MP4"
+    videoPath = r"F:\VS_Python_Project\Autopilot\Autopilot\Test_drive\2025.06.20\GP015963.MP4"
     main(videoPath)

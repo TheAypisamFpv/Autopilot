@@ -7,3 +7,4 @@ dataset/output*/
 *.fls
 *.gz
 *.log
+*.pth
