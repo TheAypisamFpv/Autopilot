@@ -80,4 +80,4 @@ Updated parameters count from 17M to 23M, with an improved image processing and 
 **No**, i'm not planning on releasing them for now (they are shitty anyway). If a good model is trained, then i'll consider it.
 
 ### How can I help?
-By sending a a better GPU for AI training then an rtx2060 6G, thanks :)
+By sending me a better GPU for AI training then an rtx2060 6G, thanks :)
