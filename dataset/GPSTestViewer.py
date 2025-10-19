@@ -362,5 +362,5 @@ def main(videoPath:str = None):
     cv2.destroyAllWindows()
 
 if __name__ == "__main__":
-    videoPath = r"D:\VS_Python_Project\Autopilot\Autopilot\Test_drive\2025.06.20\GP015963.MP4"
+    videoPath = r"F:\VS_Python_Project\Autopilot\Autopilot\Test_drive\2025.06.19\GP045961.MP4"
     main(videoPath)
