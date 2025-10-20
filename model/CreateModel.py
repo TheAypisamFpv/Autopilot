@@ -1,147 +1,177 @@
+# RefinedModel.py
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-class ImageProcessingBranch(nn.Module):
-    def __init__(self):
-        super(ImageProcessingBranch, self).__init__()
-        # Shared layers for initial processing
-        self.convBlock1 = nn.Sequential(
-            nn.Conv2d(3, 32, kernel_size=3, padding=1),
-            nn.ReLU(),
-            nn.BatchNorm2d(32),
-            nn.MaxPool2d(2, 2),
-            nn.Conv2d(32, 64, kernel_size=3, padding=1),
-            nn.ReLU(),
-            nn.BatchNorm2d(64)
-        )
-
-        self.convBlock2 = nn.Sequential(
-            nn.MaxPool2d(2, 2),
-            nn.Conv2d(64, 128, kernel_size=3, padding=1),
-            nn.ReLU(),
-            nn.BatchNorm2d(128),
-            nn.Conv2d(128, 128, kernel_size=3, padding=1),
-            nn.ReLU(),
-            nn.BatchNorm2d(128)
-        )
-
-        self.convBlock3 = nn.Sequential(
-            nn.MaxPool2d(2, 2),
-            nn.Conv2d(128, 256, kernel_size=3, padding=1),
-            nn.ReLU(),
-            nn.BatchNorm2d(256),
-            nn.Conv2d(256, 256, kernel_size=3, padding=1),
-            nn.ReLU(),
-            nn.BatchNorm2d(256)
-        )
-        
-        # Processing after concatenation
-        self.finalConv = nn.Sequential(
-            nn.Conv2d(512, 512, kernel_size=3, padding=1),
-            nn.ReLU()
-        )
-        self.globalAvgPool = nn.AdaptiveAvgPool2d((1, 1))
-
-    def forward(self, img1, img2):
-        # Process both images with shared weights
-        feat1 = self.convBlock1(img1)
-        feat2 = self.convBlock1(img2)
-
-        # Continue processing
-        feat1 = self.convBlock2(feat1)
-        feat2 = self.convBlock2(feat2)
-
-        # Continue processing
-        feat1 = self.convBlock3(feat1)
-        feat2 = self.convBlock3(feat2)
-
-        # Concatenate features
-        concatenatedFeatures = torch.cat((feat1, feat2), dim=1)
-        
-        # Final convolution and pooling
-        finalFeatures = self.finalConv(concatenatedFeatures)
-        vectorizedFeatures = self.globalAvgPool(finalFeatures)
-        vectorizedFeatures = vectorizedFeatures.view(vectorizedFeatures.size(0), -1)
-        
-        return vectorizedFeatures
-
-class DynamicInputProcessingBranch(nn.Module):
-    def __init__(self):
-        super(DynamicInputProcessingBranch, self).__init__()
-        self.dense_block = nn.Sequential(
-            nn.Linear(3, 32),
-            nn.ReLU(),
-            nn.BatchNorm1d(32)
-        )
-
+# -------------------------
+# Small utility blocks
+# -------------------------
+class ConvGNAct(nn.Module):
+    def __init__(self, in_ch, out_ch, kernel=3, stride=1, padding=1, groups=32):
+        super().__init__()
+        self.conv = nn.Conv2d(in_ch, out_ch, kernel, stride, padding, bias=False)
+        gn_groups = min(groups, out_ch)
+        self.gn = nn.GroupNorm(gn_groups, out_ch)
+        self.act = nn.ReLU(inplace=True)
     def forward(self, x):
-        return self.dense_block(x)
+        return self.act(self.gn(self.conv(x)))
 
-class TrajectoryPredictionModel(nn.Module):
-    def __init__(self):
-        super(TrajectoryPredictionModel, self).__init__()
-        self.imageBranch = ImageProcessingBranch()
-        self.dynamicBranch = DynamicInputProcessingBranch()
-        
-        self.fusion_and_fully_connected = nn.Sequential(
-            nn.Linear(512 + 32, 4096),
+class Residual(nn.Module):
+    def __init__(self, ch):
+        super().__init__()
+        self.block = nn.Sequential(
+            ConvGNAct(ch, ch, kernel=3, padding=1),
+            ConvGNAct(ch, ch, kernel=3, padding=1)
+        )
+    def forward(self, x):
+        return x + self.block(x)
+
+# -------------------------
+# Encoder: early fusion of two frames (6 channels)
+# -------------------------
+class EarlyFusionEncoder(nn.Module):
+    def __init__(self, feat_dim=256):
+        super().__init__()
+        # Keep it compact but expressive
+        self.stem = nn.Sequential(
+            ConvGNAct(6, 32, kernel=7, stride=2, padding=3),  # (B,32,H/2,W/2)
+            Residual(32),
+            ConvGNAct(32, 64, stride=2)                       # (B,64,H/4,W/4)
+        )
+        self.layer1 = nn.Sequential(
+            Residual(64),
+            ConvGNAct(64, 128, stride=2)                      # (B,128,H/8,W/8)
+        )
+        self.layer2 = nn.Sequential(
+            Residual(128),
+            ConvGNAct(128, feat_dim, stride=2)                # (B,feat_dim,H/16,W/16)
+        )
+        # small projection before decoder attention
+        self.proj = nn.Conv2d(feat_dim, feat_dim, kernel_size=1, bias=False)
+
+    def forward(self, img_t, img_tm1):
+        # expect inputs shape (B,3,H,W)
+        x = torch.cat([img_t, img_tm1], dim=1)  # (B,6,H,W)
+        x = self.stem(x)
+        x = self.layer1(x)
+        x = self.layer2(x)
+        fmap = self.proj(x)  # (B, feat_dim, Hf, Wf)
+        return fmap
+
+# -------------------------
+# Attention used by decoder (computes spatial attention conditioned on decoder state)
+# -------------------------
+class SpatialAttentionDecoder(nn.Module):
+    def __init__(self, feat_dim, hidden_dim):
+        super().__init__()
+        self.key_conv = nn.Conv2d(feat_dim, feat_dim, 1, bias=False)
+        self.value_conv = nn.Conv2d(feat_dim, feat_dim, 1, bias=False)
+        self.query_fc = nn.Linear(hidden_dim, feat_dim)
+        # scale when computing dot-product
+        self.scale = feat_dim ** -0.5
+
+    def forward(self, feat_map, query):
+        # feat_map: (B, C, H, W), query: (B, hidden_dim)
+        B, C, H, W = feat_map.shape
+        keys = self.key_conv(feat_map).view(B, C, -1).permute(0, 2, 1)   # (B, S, C)
+        vals = self.value_conv(feat_map).view(B, C, -1).permute(0, 2, 1)   # (B, S, C)
+        q = self.query_fc(query).unsqueeze(1)                             # (B,1,C)
+        attn_logits = torch.bmm(q, keys.permute(0,2,1)) * self.scale      # (B,1,S)
+        attn = torch.softmax(attn_logits, dim=-1)                         # (B,1,S)
+        context = torch.bmm(attn, vals).squeeze(1)                        # (B,C)
+        attn_map = attn.view(B, 1, H, W)
+        return context, attn_map
+
+# -------------------------
+# Decoder: autoregressive GRUCell that attends to image features each step
+# -------------------------
+class AttentiveGRUDecoder(nn.Module):
+    def __init__(self, feat_dim=256, hidden_dim=256, pred_steps=6):
+        super().__init__()
+        self.pred_steps = pred_steps
+        self.hidden_dim = hidden_dim
+        self.attn = SpatialAttentionDecoder(feat_dim, hidden_dim)
+        # map pooled features -> initial h/c
+        self.init_h = nn.Linear(feat_dim, hidden_dim)
+        self.init_c = nn.Linear(feat_dim, hidden_dim)
+        # GRUCell input: prev_xy (2) concatenated with context (feat_dim)
+        self.grucell = nn.GRUCell(input_size=2 + feat_dim, hidden_size=hidden_dim)
+        self.out_head = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim//2),
             nn.ReLU(),
-            nn.Dropout(0.5),
-            nn.Linear(4096, 2048),
-            nn.ReLU(),
-            nn.Dropout(0.5),
-            nn.Linear(2048, 1024),
-            nn.ReLU(),
-            nn.Dropout(0.5),
-            nn.Linear(1024, 512),
-            nn.ReLU(),
-            nn.Dropout(0.5),
-            nn.Linear(512, 256),
-            nn.ReLU(),
-            nn.Dropout(0.5),
-            nn.Linear(256, 128),
-            nn.ReLU(),
-            nn.Linear(128, 24)
+            nn.Linear(hidden_dim//2, 2)   # predict delta x,y for next step
         )
 
-    def forward(self, img1, img2, dynamic_data):
-        imageFeatures = self.imageBranch(img1, img2)
-        dynamicFeatures = self.dynamicBranch(dynamic_data)
-        
-        fusedFeatures = torch.cat((imageFeatures, dynamicFeatures), dim=1)
-        
-        output = self.fusion_and_fully_connected(fusedFeatures)
-        
-        # Reshape to (batch_size, 12, 2)
-        output = output.view(output.size(0), 12, 2)
-        
-        return output
+    def forward(self, feat_map, teacher_forcing=False, gt_traj=None, tf_ratio=0.9):
+        # feat_map: (B, C, H, W)
+        B = feat_map.size(0)
+        device = feat_map.device
+        pooled = F.adaptive_avg_pool2d(feat_map, (1,1)).view(B, -1)   # (B, feat_dim)
+        h = self.init_h(pooled)                                      # (B, hidden_dim)
+        c = self.init_c(pooled)                                      # (B, hidden_dim) - unused but kept for API parity
+        prev_xy = torch.zeros(B, 2, device=device)                   # start at origin in vehicle frame
+        preds = []
+        attn_maps = []
+        for t in range(self.pred_steps):
+            context, attn_map = self.attn(feat_map, h)               # (B, feat_dim), (B,1,H,W)
+            gru_in = torch.cat([prev_xy, context], dim=1)           # (B, 2 + feat_dim)
+            h = self.grucell(gru_in, h)                             # (B, hidden_dim)
+            delta = self.out_head(h)                                # (B, 2)
+            next_xy = prev_xy + delta                               # absolute position (accumulated)
+            preds.append(next_xy.unsqueeze(1))
+            attn_maps.append(attn_map)
+            # teacher forcing option (if gt_traj provided)
+            if teacher_forcing and gt_traj is not None and torch.rand(1).item() < tf_ratio:
+                prev_xy = gt_traj[:, t, :].detach()                 # feed GT
+            else:
+                prev_xy = next_xy.detach()
+        preds = torch.cat(preds, dim=1)  # (B, T, 2)
+        return preds, attn_maps
 
-    def save(self, path):
-        torch.save(self.state_dict(), path)
+# -------------------------
+# Full model wrapper
+# -------------------------
+class TrajectoryModel(nn.Module):
+    def __init__(self, feat_dim=256, hidden_dim=256, pred_steps=6, use_aux_dyn=False):
+        super().__init__()
+        self.encoder = EarlyFusionEncoder(feat_dim=feat_dim)
+        self.decoder = AttentiveGRUDecoder(feat_dim=feat_dim, hidden_dim=hidden_dim, pred_steps=pred_steps)
+        self.use_aux_dyn = use_aux_dyn
+        if use_aux_dyn:
+            self.aux = nn.Sequential(
+                nn.AdaptiveAvgPool2d((1,1)),
+                nn.Flatten(),
+                nn.Linear(feat_dim, 128),
+                nn.ReLU(),
+                nn.Linear(128, 2)   # predict speed, accel (auxiliary only)
+            )
 
-if __name__ == '__main__':
-    # Example usage:
-    # Create a dummy input tensor
-    # Input shape for images: (batch_size, channels, height, width) -> (1, 1, 480, 270)
-    # Input shape for dynamic data: (batch_size, features) -> (1, 3)
-    print("Creating dummy inputs for testing...")
-    dummyImg1 = torch.randn(1, 3, 270, 480)
-    dummyImg2 = torch.randn(1, 3, 270, 480)
-    dummyDynamicData = torch.randn(1, 3)
+        self.name = "TrajectoryModel_EarlyFusion_AttentiveGRU"
 
-    print("\nInstantiating the TrajectoryPredictionModel...")
-    # Instantiate the model
-    model = TrajectoryPredictionModel()
+    def forward(self, img_t, img_tm1, gt_traj=None, teacher_forcing=False, tf_ratio=0.9):
+        fmap = self.encoder(img_t, img_tm1)
+        preds, attn_maps = self.decoder(fmap, teacher_forcing=teacher_forcing, gt_traj=gt_traj, tf_ratio=tf_ratio)
+        aux = None
+        if self.use_aux_dyn:
+            aux = self.aux(fmap)
+        return preds, aux, attn_maps
 
-    print("\nModel instantiated successfully.")
-    # Get the model's prediction
-    prediction = model(dummyImg1, dummyImg2, dummyDynamicData)
-
-    # Print the output shape
-    print("\nOutput shape:", prediction.shape)
+# -------------------------
+# Quick smoke test & param count
+# -------------------------
+if __name__ == "__main__":
+    batchSize = 2
+    dummyImg1 = torch.randn(batchSize, 3, 270, 480)
+    dummyImg2 = torch.randn(batchSize, 3, 270, 480)
+    model = TrajectoryModel(feat_dim=256, hidden_dim=256, pred_steps=6, use_aux_dyn=True)
+    model.eval()
     
-    # Count the number of parameters
-    totalParams = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    print(f"\nTotal trainable parameters: {totalParams/1e6:.1f}M")
+    with torch.no_grad():
+        preds, aux, attn = model(dummyImg1, dummyImg2)
+        
+    print("preds:", preds.shape)   # expect (B, 6, 2)
+    if aux is not None:
+        print("aux:", aux.shape)
+        
+    total_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    print("Total trainable params:", total_params)

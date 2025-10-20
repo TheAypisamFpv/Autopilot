@@ -1,95 +1,103 @@
-\documentclass{article}
+\documentclass[a4paper,12pt]{article}
 \usepackage{amsmath}
 \usepackage{geometry}
-\geometry{a4paper, margin=1in}
+\geometry{margin=1in}
+\usepackage{booktabs}
+\usepackage{parskip}
+\usepackage[T1]{fontenc}
+\usepackage{times}
 
 \begin{document}
 
-\section*{Introduction}
-This model is a multimodal neural network designed to predict the future 3s trajectory of a vehicle. It processes visual data from two consecutive images with a temporal gap of 0.1s, along with vehicle speed derived from GPS data. The model outputs a sequence of 6 displacement vectors representing the future vehicle's path over 3 seconds.
+\title{TrajectoryModel Architecture Description}
+\author{}
+\date{}
+\maketitle
 
-\section{Model Architecture}
+\section{Overview}
+The TrajectoryModel is a neural network designed for predicting vehicle trajectories based on two input images (current and previous frames). It combines an early fusion encoder with an attentive GRU-based decoder, optionally including an auxiliary dynamics prediction head. The model processes input images of shape (B, 3, 270, 480), where B is the batch size, and outputs predicted trajectories of shape (B, 6, 2) for 6 future time steps, along with attention maps and optional auxiliary dynamics predictions.
 
+\section{Model Components}
 
-\begin{enumerate}
-    \item \textbf{Image Processing Branch}:
-    \begin{itemize}
-        \item \textbf{Convolutional Block 1}:
+\subsection{Utility Blocks}
+\begin{itemize}
+    \item \textbf{ConvGNAct}: A convolutional block consisting of a 2D convolution, group normalization, and ReLU activation.
         \begin{itemize}
-            \item Conv2D: 64 filters, $3 \times 3$ kernel, padding=1, ReLU activation
-            \item BatchNorm2D
-            \item Conv2D: 64 filters, $3 \times 3$ kernel, padding=1, ReLU activation
-            \item BatchNorm2D
-            \item MaxPool2D: $2 \times 2$ 
+            \item Parameters: input channels, output channels, kernel size (default 3), stride (default 1), padding (default 1), group normalization groups (default 32).
+            \item Forward: Applies convolution, group normalization, and ReLU activation sequentially.
         \end{itemize}
-        
-        \item \textbf{Convolutional Block 2}:
+    \item \textbf{Residual}: A residual block with two ConvGNAct layers.
         \begin{itemize}
-            \item Conv2D: 128 filters, $3 \times 3$ kernel, padding=1, ReLU activation
-            \item BatchNorm2D
-            \item Conv2D: 128 filters, $3 \times 3$ kernel, padding=1, ReLU activation
-            \item BatchNorm2D
-            \item MaxPool2D: $2 \times 2$ 
+            \item Parameters: Number of channels.
+            \item Forward: Adds the input to the output of two ConvGNAct layers.
         \end{itemize}
-        
-        \item \textbf{Convolutional Block 3}:
-        \begin{itemize}
-            \item Conv2D: 256 filters, $3 \times 3$ kernel, padding=1, ReLU activation
-            \item BatchNorm2D
-            \item Conv2D: 256 filters, $3 \times 3$ kernel, padding=1, ReLU activation
-            \item BatchNorm2D
-            \item Conv2D: 256 filters, $3 \times 3$ kernel, padding=1, ReLU activation
-            \item BatchNorm2D
-            \item MaxPool2D: $2 \times 2$ 
-        \end{itemize}
-        
-        \item \textbf{Convolutional Block 4}:
-        \begin{itemize}
-            \item Conv2D: 512 filters, $3 \times 3$ kernel, padding=1, ReLU activation
-            \item BatchNorm2D
-            \item Conv2D: 512 filters, $3 \times 3$ kernel, padding=1, ReLU activation
-            \item BatchNorm2D
-            \item Conv2D: 512 filters, $3 \times 3$ kernel, padding=1, ReLU activation
-            \item BatchNorm2D
-        \end{itemize}
-        
-        \item \textbf{Spatial Attention}:
-        \begin{itemize}
-            \item Conv2D: 1 filter, $1 \times 1$ kernel, Sigmoid activation
-            \item Attention application through element-wise multiplication
-        \end{itemize}
-        
-        \item \textbf{Feature Concatenation}:
-        \begin{itemize}
-            \item Concatenate features from both images (creating a 1024-channel feature map)
-        \end{itemize}
-        
-        \item \textbf{Final Convolutional Processing}:
-        \begin{itemize}
-            \item Conv2D: 1024 filters, $3 \times 3$ kernel, padding=1, ReLU activation
-            \item Conv2D: 1024 filters, $1 \times 1$ kernel, ReLU activation
-            \item Global Average Pooling to create a 1024-dimensional vector
-        \end{itemize}
-    \end{itemize}
+\end{itemize}
 
-    \item \textbf{Dynamic Input Processing Branch} (processes vehicle speed):
-    \begin{itemize}
-        \item Dense layer with 32 units, Tanh activation, input dimension 1
-        \item Batch normalization
-    \end{itemize}
+\subsection{EarlyFusionEncoder}
+The encoder fuses two input RGB images (current and previous, each of shape (B, 3, H, W)) into a single feature map.
+\begin{itemize}
+    \item \textbf{Input}: Concatenated images of shape (B, 6, H, W).
+    \item \textbf{Architecture}:
+        \begin{itemize}
+            \item \textit{Stem}: ConvGNAct (6 to 32 channels, kernel=7, stride=2), Residual (32), ConvGNAct (32 to 64, stride=2).
+            \item \textit{Layer1}: Residual (64), ConvGNAct (64 to 128, stride=2).
+            \item \textit{Layer2}: Residual (128), ConvGNAct (128 to feat\_dim, stride=2).
+            \item \textit{Projection}: 1x1 convolution (feat\_dim to feat\_dim).
+        \end{itemize}
+    \item \textbf{Output}: Feature map of shape (B, feat\_dim, H/16, W/16).
+\end{itemize}
 
-    \item \textbf{Feature Fusion and Fully Connected Layers}:
-    \begin{itemize}
-        \item Concatenation of image features (1024) and dynamic features (32)
-        \item Dense layer with 2048 units, ReLU activation
-        \item Dropout (0.5)
-        \item Dense layer with 1024 units, ReLU activation
-        \item Dropout (0.5)
-        \item Dense layer with 512 units, ReLU activation
-        \item Dropout (0.3)
-        \item Dense layer with 128 units, ReLU activation
-        \item Dense layer with 12 units (output)
-        \item Reshape to $(6, 2)$ format - representing 6 vectors with x,y coordinates
-    \end{itemize}
-\end{enumerate}
+\subsection{SpatialAttentionDecoder}
+This module computes spatial attention over the encoder's feature map, conditioned on the decoder's hidden state.
+\begin{itemize}
+    \item \textbf{Parameters}: Feature dimension (feat\_dim), hidden dimension (hidden\_dim).
+    \item \textbf{Components}:
+        \begin{itemize}
+            \item Key and value convolutions: 1x1 convolutions on the feature map.
+            \item Query fully connected layer: Maps hidden state to feat\_dim.
+        \end{itemize}
+    \item \textbf{Forward}:
+        \begin{itemize}
+            \item Computes keys and values from the feature map, reshapes to (B, HW, feat\_dim).
+            \item Generates query from hidden state, computes attention logits with scaling.
+            \item Applies softmax to obtain attention weights, computes context vector.
+        \end{itemize}
+    \item \textbf{Output}: Context vector (B, feat\_dim) and attention map (B, 1, H, W).
+\end{itemize}
+
+\subsection{AttentiveGRUDecoder}
+An autoregressive decoder using a GRUCell to predict future trajectory points.
+\begin{itemize}
+    \item \textbf{Parameters}: Feature dimension (feat\_dim), hidden dimension (hidden\_dim), prediction steps (pred\_steps=6).
+    \item \textbf{Components}:
+        \begin{itemize}
+            \item Initial hidden and cell state mappings from pooled features.
+            \item GRUCell with input size (2 + feat\_dim) and hidden size (hidden\_dim).
+            \item Output head: Linear layers to predict delta x, y for each step.
+        \end{itemize}
+    \item \textbf{Forward}:
+        \begin{itemize}
+            \item Initializes hidden state from pooled feature map.
+            \item Iteratively applies attention, GRUCell, and output head for each time step.
+            \item Supports teacher forcing with ground truth trajectories.
+        \end{itemize}
+    \item \textbf{Output}: Predicted trajectories (B, pred\_steps, 2) and attention maps.
+\end{itemize}
+
+\subsection{TrajectoryModel}
+The full model integrates the encoder and decoder, with an optional auxiliary dynamics head.
+\begin{itemize}
+    \item \textbf{Parameters}: Feature dimension (default 256), hidden dimension (default 256), prediction steps (default 6), use auxiliary dynamics (default False).
+    \item \textbf{Components}:
+        \begin{itemize}
+            \item EarlyFusionEncoder.
+            \item AttentiveGRUDecoder.
+            \item Optional auxiliary head: Predicts speed and acceleration from pooled features.
+        \end{itemize}
+    \item \textbf{Forward}: Processes two input images, returns predictions, auxiliary outputs (if enabled), and attention maps.
+\end{itemize}
+
+\section{Summary}
+The TrajectoryModel is a compact yet expressive architecture for trajectory prediction, leveraging early fusion for input processing, spatial attention for feature interaction, and an autoregressive GRU for sequential prediction. Its modular design allows for flexibility in applications requiring vehicle trajectory forecasting.
+
 \end{document}

@@ -12,7 +12,7 @@ import time
 from typing import List, Tuple, Dict, Any
 import sys
 
-from model.createModel import TrajectoryPredictionModel
+from model.CreateModel import TrajectoryModel
 from dataset.generator import (
     loadGpsData,
     findFutureGpsPoints,
@@ -78,7 +78,7 @@ def visualizePredictions(frame, predictions, groundTruth):
 def runModel(modelPath, videoPath, temporalContextTimeWindow=0.1):
     # --- Initialization ---
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = TrajectoryPredictionModel().to(device)
+    model = TrajectoryModel().to(device)
     model.load_state_dict(torch.load(modelPath))
     model.eval()
 
@@ -199,24 +199,23 @@ def runModel(modelPath, videoPath, temporalContextTimeWindow=0.1):
                     prevFrameOrig = frameBuffer[0]
                     frameBuffer.pop(0)
 
-                    prevImage = Image.fromarray(cv2.cvtColor(prevFrameOrig, cv2.COLOR_BGR2RGB))
-                    currentImage = Image.fromarray(cv2.cvtColor(currentFrameOrig, cv2.COLOR_BGR2RGB))
-                    prevImgTensor = transform(prevImage).unsqueeze(0).to(device)
-                    currentImgTensor = transform(currentImage).unsqueeze(0).to(device)
-                    dynamicData = torch.tensor([[speed, acceleration, turnRate]], dtype=torch.float32).to(device)
+                prevImage = Image.fromarray(cv2.cvtColor(prevFrameOrig, cv2.COLOR_BGR2RGB))
+                currentImage = Image.fromarray(cv2.cvtColor(currentFrameOrig, cv2.COLOR_BGR2RGB))
+                prevImgTensor = transform(prevImage).unsqueeze(0).to(device)
+                currentImgTensor = transform(currentImage).unsqueeze(0).to(device)
 
-                    # --- Prediction ---
-                    prediction = model(prevImgTensor, currentImgTensor, dynamicData)
+                # --- Prediction ---
+                prediction, _, _ = model(currentImgTensor, prevImgTensor)
 
-                    # --- Ground Truth Trajectory ---
-                    labels = None
-                    if gpsIsValid and currentGpsPoint:
-                        interval = 3.0 / 12.0
-                        futureTrajectory = calculateFutureTrajectory(gpsData, currentGpsPoint, currentFrameTime, duration=3.0, interval=interval)
-                        validVectors = [v for v in futureTrajectory if v is not None]
-                        if len(validVectors) >= 12:
-                            labelsList = [[v['x'], v['y']] for v in validVectors]
-                            labels = torch.tensor(labelsList[:12], dtype=torch.float32)
+                # --- Ground Truth Trajectory ---
+                labels = None
+                if gpsIsValid and currentGpsPoint:
+                    interval = 3.0 / 12.0
+                    futureTrajectory = calculateFutureTrajectory(gpsData, currentGpsPoint, currentFrameTime, duration=3.0, interval=interval)
+                    validVectors = [v for v in futureTrajectory if v is not None]
+                    if len(validVectors) >= 12:
+                        labelsList = [[v['x'], v['y']] for v in validVectors]
+                        labels = torch.tensor(labelsList[:12], dtype=torch.float32)
 
                 # --- Visualization ---
                 visualizePredictions(visualizeFrame, prediction.squeeze() if prediction is not None else None, labels)
@@ -242,6 +241,6 @@ def runModel(modelPath, videoPath, temporalContextTimeWindow=0.1):
 
 
 if __name__ == '__main__':
-    modelPath = r"D:\VS_Python_Project\Autopilot\Autopilot\training\run3\best_model.pth"
-    videoPath = r"D:\VS_Python_Project\Autopilot\Autopilot\Test_drive\2025.06.20\GP045964.MP4"
+    modelPath = r"D:\VS_Python_Project\Autopilot\Autopilot\training\run10\best_model.pth"
+    videoPath = r"D:\VS_Python_Project\Autopilot\Autopilot\Test_drive\2025.06.25\GP015971.MP4"
     runModel(modelPath, videoPath)

@@ -19,11 +19,16 @@ The following visualization shows an example of processed GPS data used for trai
 
 ## Model Architecture
 
-The network uses a multi-modal input approach with two processing branches that are fused to make accurate trajectory predictions:
+The network uses an early fusion encoder-decoder architecture that processes two consecutive RGB images concatenated as input, followed by an attentive GRU decoder for trajectory prediction:
 
-PDF version of the architecture diagram can be found [here](model/architecture/model_architecture.pdf).
+- **Early Fusion Encoder**: Concatenates the two input images (6 channels) and processes them through hierarchical convolutional layers with residual connections
+- **Attentive GRU Decoder**: Uses spatial attention to focus on relevant image regions while autoregressively predicting displacement vectors
 
-![Model Architecture](model/architecture/modelArchitecture.mmd.png)
+Detailed architecture documentation can be found in:
+- [LaTeX description](model/architecture/model_architecture.tex)
+- [Mermaid diagram](model/architecture/modelArchitecture.mmd)
+
+To generate a PDF from the LaTeX file, compile `model_architecture.tex` with a LaTeX distribution (e.g., using pdflatex).
 
 
 
