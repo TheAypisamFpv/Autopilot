@@ -153,25 +153,41 @@ def trainModel(
     trainValSplit=0.8,
     patience=12,
     datasetMaxSize=None,
-    grad_accum_steps=2,
-    use_aux_dyn=False,
-    feat_dim=256,
-    hidden_dim=256,
-    pred_steps=6,
-    device_override=None,
+    gradAccumSteps=2,
+    useAuxDyn=False,
+    featDim=256,
+    hiddenDim=256,
+    predSteps=6,
+    deviceOverride=None,
 ):
     """
     Main training function for TrajectoryModel.
 
     Handles data loading, training, validation, early stopping, and saving checkpoints.
+
+    args:
+        datasetDir (str): Path to dataset directory.
+        numEpochs (int): Number of training epochs.
+        batchSize (int): Batch size for training.
+        learningRate (float): Initial learning rate.
+        trainValSplit (float): Proportion of data for training vs validation.
+        patience (int): Early stopping patience.
+        datasetMaxSize (int or None): Max number of samples to load from dataset.
+        gradAccumSteps (int): Gradient accumulation steps.
+        useAuxDyn (bool): Whether to use auxiliary dynamics head.
+        featDim (int): Feature dimension for model.
+        hiddenDim (int): Hidden dimension for model.
+        predSteps (int): Number of prediction steps.
+        deviceOverride (str or None): Device to use ('cpu' or 'cuda'), or None for auto-detect.
     """
+    
     if not os.path.exists(datasetDir):
         raise FileNotFoundError(f"Dataset directory '{datasetDir}' does not exist.")
 
     runDir = getRunDir()
     device = (
-        torch.device(device_override)
-        if device_override
+        torch.device(deviceOverride)
+        if deviceOverride
         else (torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu"))
     )
     useAmp = device.type == "cuda"
@@ -186,17 +202,17 @@ def trainModel(
     ])
 
     dataset = DrivingDataset(datasetDir, transform=transform, maxSize=datasetMaxSize)
-    total_samples = len(dataset)
-    trainSize = int(trainValSplit * total_samples)
-    valSize = total_samples - trainSize
+    totalSamples = len(dataset)
+    trainSize = int(trainValSplit * totalSamples)
+    valSize = totalSamples - trainSize
     trainDataset, valDataset = random_split(dataset, [trainSize, valSize])
 
-    num_workers = 2
-    trainLoader = DataLoader(trainDataset, batch_size=batchSize, shuffle=True, num_workers=num_workers, pin_memory=True)
-    valLoader = DataLoader(valDataset, batch_size=batchSize, shuffle=False, num_workers=num_workers, pin_memory=True)
+    numWorkers = 2
+    trainLoader = DataLoader(trainDataset, batch_size=batchSize, shuffle=True, num_workers=numWorkers, pin_memory=True)
+    valLoader = DataLoader(valDataset, batch_size=batchSize, shuffle=False, num_workers=numWorkers, pin_memory=True)
 
     model = TrajectoryModel(
-        feat_dim=feat_dim, hidden_dim=hidden_dim, pred_steps=pred_steps, use_aux_dyn=use_aux_dyn
+        feat_dim=featDim, hidden_dim=hiddenDim, pred_steps=predSteps, use_aux_dyn=useAuxDyn
     ).to(device)
 
 
@@ -214,86 +230,88 @@ def trainModel(
         "trainValSplit": trainValSplit,
         "patience": patience,
         "datasetMaxSize": datasetMaxSize,
-        "grad_accum_steps": grad_accum_steps,
-        "use_aux_dyn": use_aux_dyn,
-        "feat_dim": feat_dim,
-        "hidden_dim": hidden_dim,
-        "pred_steps": pred_steps,
-        "device_override": device_override,
-        "model_name": modelName,
+        "gradAccumSteps": gradAccumSteps,
+        "useAuxDyn": useAuxDyn,
+        "featDim": featDim,
+        "hiddenDim": hiddenDim,
+        "predSteps": predSteps,
+        "deviceOverride": deviceOverride,
+        "modelName": modelName,
     }
     with open(os.path.join(runDir, "training_params.json"), "w") as f:
         json.dump(params, f, indent=4)
     optimizer = optim.AdamW(model.parameters(), lr=learningRate, weight_decay=1e-4, eps=1e-8)
 
-    total_steps = math.ceil((len(trainLoader) * numEpochs) / max(1, grad_accum_steps))
-    warmup_steps = min(500, max(50, int(0.01 * total_steps)))
+    totalSteps = math.ceil((len(trainLoader) * numEpochs) / max(1, gradAccumSteps))
+    warmupSteps = min(500, max(50, int(0.01 * totalSteps)))
 
-    def lr_lambda(step):
-        if step < warmup_steps:
-            return step / max(1, warmup_steps)
-        progress = (step - warmup_steps) / max(1, total_steps - warmup_steps)
+    def lrLambda(step):
+        if step < warmupSteps:
+            return step / max(1, warmupSteps)
+        progress = (step - warmupSteps) / max(1, totalSteps - warmupSteps)
         return 0.5 * (1.0 + math.cos(math.pi * progress))
 
-    scheduler = optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
+    scheduler = optim.lr_scheduler.LambdaLR(optimizer, lrLambda)
 
-    per_step_weights = torch.tensor([1.6, 1.3, 1.0, 0.8, 0.6, 0.5], dtype=torch.float32)
-    aux_dyn_weight = 0.02
-    teacher_forcing_start = 0.9
-    teacher_forcing_end = 0.0
-    tf_decay_epochs = min(30, max(5, int(0.2 * numEpochs)))
+    perStepWeights = torch.tensor([1.6, 1.3, 1.0, 0.8, 0.6, 0.5], dtype=torch.float32)
+    auxDynWeight = 0.02
+    teacherForcingStart = 0.9
+    teacherForcingEnd = 0.0
+    tfDecayEpochs = min(30, max(5, int(0.2 * numEpochs)))
 
     history = {"train_loss": [], "val_loss": [], "train_ADE": [], "val_ADE": [], "train_FDE": [], "val_FDE": []}
     bestValLoss = float("inf")
     epochsNoImprove = 0
     trainingStartTime = time.time()
-    global_step = 0
+    globalStep = 0
 
     for epoch in range(numEpochs):
         model.train()
         runningLoss, runningADE, runningFDE = 0.0, 0.0, 0.0
         epochStartTime = time.time()
 
-        tf_ratio = (
-            teacher_forcing_start - (epoch / tf_decay_epochs) * (teacher_forcing_start - teacher_forcing_end)
-            if epoch < tf_decay_epochs
-            else teacher_forcing_end
+        tfRatio = (
+            teacherForcingStart - (epoch / tfDecayEpochs) * (teacherForcingStart - teacherForcingEnd)
+            if epoch < tfDecayEpochs
+            else teacherForcingEnd
         )
 
+        print(f"###### Epoch {epoch + 1}/{numEpochs} - TF Ratio: {tfRatio:.2f} ######")
+
         optimizer.zero_grad()
-        accum_steps = 0
+        accumSteps = 0
 
         for i, (prevImg, currentImg, dynamicData, labels) in enumerate(trainLoader):
             prevImg, currentImg, labels = prevImg.to(device), currentImg.to(device), labels.to(device)
-            batch_size = labels.size(0)
+            batchSize = labels.size(0)
 
-            with autocast(device='cuda', enabled=useAmp):
-                preds, aux_out, _ = model(currentImg, prevImg, gt_traj=labels, teacher_forcing=True, tf_ratio=tf_ratio)
-                loss_main = trajectory_loss_with_weights(preds, labels, per_step_weights, reduction="mean")
-                loss = loss_main
+            with autocast(device_type='cuda', enabled=useAmp):
+                preds, auxOut, _ = model(currentImg, prevImg, gt_traj=labels, teacher_forcing=True, tf_ratio=tfRatio)
+                lossMain = trajectory_loss_with_weights(preds, labels, perStepWeights, reduction="mean")
+                loss = lossMain
 
-                if use_aux_dyn and aux_out is not None:
-                    aux_loss = torch.tensor(0.0, device=device)
-                    loss += aux_dyn_weight * aux_loss
+                if useAuxDyn and auxOut is not None:
+                    auxLoss = torch.tensor(0.0, device=device)
+                    loss += auxDynWeight * auxLoss
 
-            loss = loss / grad_accum_steps
+            loss = loss / gradAccumSteps
             scaler.scale(loss).backward()
-            accum_steps += 1
+            accumSteps += 1
 
-            if accum_steps == grad_accum_steps:
+            if accumSteps == gradAccumSteps:
                 scaler.unscale_(optimizer)
                 torch.nn.utils.clip_grad_norm_(model.parameters(), 5.0)
                 scaler.step(optimizer)
                 scaler.update()
                 optimizer.zero_grad()
                 scheduler.step()
-                global_step += 1
-                accum_steps = 0
+                globalStep += 1
+                accumSteps = 0
 
-            runningLoss += loss_main.item() * batch_size
+            runningLoss += lossMain.item() * batchSize
             ade, fde = ADE_FDE(preds.detach(), labels)
-            runningADE += ade * batch_size
-            runningFDE += fde * batch_size
+            runningADE += ade * batchSize
+            runningFDE += fde * batchSize
 
             completion = (i + 1) / len(trainLoader)
             epochElapsed = time.time() - epochStartTime
@@ -306,8 +324,8 @@ def trainModel(
             m, s = divmod(rem, 60)
             elapsedFmt = f"{h:02d}:{m:02d}:{s:02d}"
 
-            avgLoss = runningLoss / ((i + 1) * batch_size)
-            print(f"{getProgressBar(completion, wheelIndex=i, maxbarLength=75)} -> "
+            avgLoss = runningLoss / ((i + 1) * batchSize)
+            print(f"{getProgressBar(completion, wheelIndex=i, maxbarLength=75)}"
                   f"Avg Train Loss: {avgLoss:.4f} - ETA: {etaTime} - Time: {elapsedFmt}", end="\r")
 
         trainLoss = runningLoss / len(trainLoader.dataset)
@@ -320,18 +338,20 @@ def trainModel(
         model.eval()
         valLoss, valADE, valFDE = 0.0, 0.0, 0.0
 
+        print('\n\nValidation Progress:')
+
         with torch.no_grad():
             for i, (prevImg, currentImg, dynamicData, labels) in enumerate(valLoader):
                 prevImg, currentImg, labels = prevImg.to(device), currentImg.to(device), labels.to(device)
-                with autocast(device='cuda', enabled=useAmp):
+                with autocast(device_type='cuda', enabled=useAmp):
                     preds, _, _ = model(currentImg, prevImg, teacher_forcing=False, tf_ratio=0.0)
-                    loss_main = trajectory_loss_with_weights(preds, labels, per_step_weights, reduction="mean")
-                valLoss += loss_main.item() * labels.size(0)
+                    lossMain = trajectory_loss_with_weights(preds, labels, perStepWeights, reduction="mean")
+                valLoss += lossMain.item() * labels.size(0)
                 ade, fde = ADE_FDE(preds, labels)
                 valADE += ade * labels.size(0)
                 valFDE += fde * labels.size(0)
                 completion = (i + 1) / len(valLoader)
-                print(f"{getProgressBar(completion, wheelIndex=i, maxbarLength=75)} -> "
+                print(f"{getProgressBar(completion, wheelIndex=i, maxbarLength=75)}"
                       f"Avg Val Loss: {valLoss/((i+1)*labels.size(0)):.4f} (best: {bestValLoss:.4f})", end="\r")
 
         valLoss /= len(valLoader.dataset)
@@ -341,12 +361,16 @@ def trainModel(
         history["val_ADE"].append(valADE)
         history["val_FDE"].append(valFDE)
 
-        print(f"\nEpoch {epoch+1}/{numEpochs} | Train Loss: {trainLoss:.4f} | "
+        print(f"\nTrain Loss: {trainLoss:.4f} | "
               f"Val Loss: {valLoss:.4f} | ADE: {valADE:.4f} | FDE: {valFDE:.4f}")
+
+        historyDf = pd.DataFrame(history)
+        historyDf.to_csv(os.path.join(runDir, "training_history.csv"), index=False)
 
         if valLoss < bestValLoss:
             bestValLoss = valLoss
             torch.save(model.state_dict(), os.path.join(runDir, "best_model.pth"))
+            print(f"New best model saved: {bestValLoss:.4f}")
             epochsNoImprove = 0
         else:
             torch.save(model.state_dict(), os.path.join(runDir, "last_model.pth"))
@@ -356,8 +380,8 @@ def trainModel(
             print(f"Early stopping after {patience} epochs with no improvement.")
             break
 
-    historyDf = pd.DataFrame(history)
-    historyDf.to_csv(os.path.join(runDir, "training_history.csv"), index=False)
+        print("\n")
+
     plotHistory(history, os.path.join(runDir, "loss_plot.png"))
     print("Training completed.")
 
@@ -365,28 +389,28 @@ def trainModel(
 if __name__ == "__main__":
     datasetPath = r"D:\VS_Python_Project\Autopilot\Autopilot\dataset\output"
     datasetMaxSize = 75_000   # Maximum number of samples to load from the dataset (None = use all available)
-    num_epochs = 150          # Total number of training epochs (full passes through the dataset)
+    numEpochs = 150           # Total number of training epochs (full passes through the dataset)
     patience = 15             # Early stopping patience (stop if no val improvement for this many epochs)
     batchSize = 48            # Number of samples per training batch (controls GPU memory usage)
-    grad_accum_steps = 1      # Gradient accumulation steps (simulates larger effective batch if >1)
+    gradAccumSteps = 1        # Gradient accumulation steps (simulates larger effective batch if >1)
     learningRate = 3e-4       # Initial learning rate for the optimizer
-    feat_dim = 256            # Feature dimension of encoder output (controls model width / capacity)
-    hidden_dim = 256          # Hidden size of the GRU decoder (affects model memory and temporal capacity)
-    pred_steps = 6            # Number of waypoints (time steps) predicted for each sample
-    use_aux_dyn = False       # Whether to enable auxiliary dynamics head (speed/accel prediction)
+    featDim = 256             # Feature dimension of encoder output (controls model width / capacity)
+    hiddenDim = 256           # Hidden size of the GRU decoder (affects model memory and temporal capacity)
+    predSteps = 6             # Number of waypoints (time steps) predicted for each sample
+    useAuxDyn = False         # Whether to enable auxiliary dynamics head (speed/accel prediction)
 
 
     trainModel(
         datasetDir=datasetPath,
-        numEpochs=num_epochs,
+        numEpochs=numEpochs,
         batchSize=batchSize,
         learningRate=learningRate,
         trainValSplit=0.8,
         patience=patience,
         datasetMaxSize=datasetMaxSize,
-        grad_accum_steps=grad_accum_steps,
-        use_aux_dyn=use_aux_dyn,
-        feat_dim=feat_dim,
-        hidden_dim=hidden_dim,
-        pred_steps=pred_steps,
+        gradAccumSteps=gradAccumSteps,
+        useAuxDyn=useAuxDyn,
+        featDim=featDim,
+        hiddenDim=hiddenDim,
+        predSteps=predSteps,
     )

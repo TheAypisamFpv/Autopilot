@@ -242,5 +242,5 @@ def runModel(modelPath, videoPath, temporalContextTimeWindow=0.1):
 
 if __name__ == '__main__':
     modelPath = r"D:\VS_Python_Project\Autopilot\Autopilot\training\run10\best_model.pth"
-    videoPath = r"D:\VS_Python_Project\Autopilot\Autopilot\Test_drive\2025.06.25\GP015971.MP4"
+    videoPath = r"D:\VS_Python_Project\Autopilot\Autopilot\Test_drive\2025.06.25\GP035971.MP4"
     runModel(modelPath, videoPath)
