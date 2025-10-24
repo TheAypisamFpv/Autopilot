@@ -56,6 +56,21 @@ class EarlyFusionEncoder(nn.Module):
         x = self.layer1(x)
         x = self.layer2(x)
         fmap = self.proj(x)  # (B, feat_dim, Hf, Wf)
+        # Add vertical positional encoding
+        H, W = fmap.shape[2:]
+        yCoords = torch.zeros(1, 1, H, 1, device=fmap.device)
+        usefulStart = 0.35  # 35% from top is useless
+        usefulEnd = 0.84    # 84% from top (100% - 16% bottom)
+        for i in range(H):
+            normPos = i / (H - 1)
+            if normPos < usefulStart:
+                y = -1.0
+            elif normPos > usefulEnd:
+                y = 1.0
+            else:
+                y = (normPos - usefulStart) / (usefulEnd - usefulStart) * 2 - 1
+            yCoords[0, 0, i, 0] = y
+        fmap = torch.cat([fmap, yCoords.expand(fmap.size(0), 1, H, W)], dim=1)
         return fmap
 
 # -------------------------
@@ -135,13 +150,13 @@ class TrajectoryModel(nn.Module):
     def __init__(self, feat_dim=256, hidden_dim=256, pred_steps=6, use_aux_dyn=False):
         super().__init__()
         self.encoder = EarlyFusionEncoder(feat_dim=feat_dim)
-        self.decoder = AttentiveGRUDecoder(feat_dim=feat_dim, hidden_dim=hidden_dim, pred_steps=pred_steps)
+        self.decoder = AttentiveGRUDecoder(feat_dim=feat_dim + 1, hidden_dim=hidden_dim, pred_steps=pred_steps)
         self.use_aux_dyn = use_aux_dyn
         if use_aux_dyn:
             self.aux = nn.Sequential(
                 nn.AdaptiveAvgPool2d((1,1)),
                 nn.Flatten(),
-                nn.Linear(feat_dim, 128),
+                nn.Linear(feat_dim + 1, 128),
                 nn.ReLU(),
                 nn.Linear(128, 2)   # predict speed, accel (auxiliary only)
             )

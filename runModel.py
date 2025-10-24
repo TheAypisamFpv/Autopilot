@@ -31,7 +31,7 @@ def putTextWithOutline(frame, text, org, fontFace, fontScale, color, thickness=1
     # Draw the main text in the specified color
     cv2.putText(frame, text, org, fontFace, fontScale, color, thickness, cv2.LINE_AA)
 
-def visualizePredictions(frame, predictions, groundTruth):
+def visualizePredictions(frame, predictions, groundTruth, attnMap=None):
     originPoint = (frame.shape[1] // 2, frame.shape[0] - 5)
     vecToPixel = 20
     vectorThickness = 15
@@ -66,6 +66,18 @@ def visualizePredictions(frame, predictions, groundTruth):
             
             cv2.line(frame, currentPointPred, (currentPointPred[0]-200, currentPointPred[1]), (0, 0, 0), 2, cv2.LINE_AA)
 
+    # Overlay attention map if provided
+    if attnMap is not None:
+        # Resize attention map to frame size
+        attnResized = cv2.resize(attnMap, (frame.shape[1], frame.shape[0]), interpolation=cv2.INTER_LINEAR)
+        # Normalize to 0-255
+        attnNorm = cv2.normalize(attnResized, None, 0, 255, cv2.NORM_MINMAX, cv2.CV_8U)
+        # Apply heatmap
+        heatmap = cv2.applyColorMap(attnNorm, cv2.COLORMAP_JET)
+        # Overlay with alpha
+        alpha = 0.2
+        frame = cv2.addWeighted(frame, 1 - alpha, heatmap, alpha, 0)
+
     # Resize frame to fit the display
     newWidth = frame.shape[1] // 2
     newHeight = frame.shape[0] // 2
@@ -78,9 +90,14 @@ def visualizePredictions(frame, predictions, groundTruth):
 def runModel(modelPath, videoPath, temporalContextTimeWindow=0.1):
     # --- Initialization ---
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = TrajectoryModel().to(device)
+    print(f"Using device: {device}")
+    model = TrajectoryModel(feat_dim=512, hidden_dim=1024, pred_steps=12).to(device)
     model.load_state_dict(torch.load(modelPath))
     model.eval()
+
+    transformVisual = transforms.Compose([
+        transforms.Resize((270, 480))
+    ])
 
     transform = transforms.Compose([
         transforms.Resize((270, 480)),
@@ -142,6 +159,47 @@ def runModel(modelPath, videoPath, temporalContextTimeWindow=0.1):
                 else:
                     speed, acceleration, turnRate = 0.0, 0.0, 0.0
 
+
+                # --- Frame Buffering and Tensor Preparation ---
+                frameBuffer.append(frame)
+
+                prediction = None
+                labels = None
+                attnMaps = None
+
+                if len(frameBuffer) >= frameBufferSize:
+                    currentFrameOrig = frameBuffer[-1]
+                    prevFrameOrig = frameBuffer[0]
+                    frameBuffer.pop(0)
+
+                    prevImage = Image.fromarray(cv2.cvtColor(prevFrameOrig, cv2.COLOR_BGR2RGB))
+                    currentImage = Image.fromarray(cv2.cvtColor(currentFrameOrig, cv2.COLOR_BGR2RGB))
+                    prevImgTensor = transform(prevImage).unsqueeze(0).to(device)
+                    currentImgTensor = transform(currentImage).unsqueeze(0).to(device)
+
+                    OgSize = visualizeFrame.shape
+                    visualizeFrame = cv2.resize(currentFrameOrig, (480, 270))
+                    visualizeFrame = cv2.resize(visualizeFrame, (OgSize[1], OgSize[0]))
+                    
+
+                    # --- Prediction ---
+                    prediction, _, attnMaps = model(currentImgTensor, prevImgTensor)
+
+                    # Show previous frame with attention map
+                    # if attnMaps:
+                    #     prevAttn = attnMaps[-1].squeeze().cpu().numpy()
+                    #     prevVis = prevFrameOrig.copy()
+                    #     # Overlay attention map
+                    #     attnResized = cv2.resize(prevAttn, (prevVis.shape[1], prevVis.shape[0]), interpolation=cv2.INTER_LINEAR)
+                    #     attnNorm = cv2.normalize(attnResized, None, 0, 255, cv2.NORM_MINMAX, cv2.CV_8U)
+                    #     heatmap = cv2.applyColorMap(attnNorm, cv2.COLORMAP_JET)
+                    #     alpha = 0.5
+                    #     prevVis = cv2.addWeighted(prevVis, 1 - alpha, heatmap, alpha, 0)
+                    #     # Resize to 50% smaller than current display (current is //2, so //4)
+                    #     prevHeight, prevWidth = prevVis.shape[:2]
+                    #     prevResized = cv2.resize(prevVis, (prevWidth // 4, prevHeight // 4))
+                    #     cv2.imshow("Previous Frame", prevResized)
+
                 # --- Debug Text Overlay ---
                 font = cv2.FONT_HERSHEY_SIMPLEX
                 fontScale = 1
@@ -188,24 +246,6 @@ def runModel(modelPath, videoPath, temporalContextTimeWindow=0.1):
                     warningText = "Warning: Low GPS quality"
                     cv2.putText(visualizeFrame, warningText, (textX, textYStart + 6 * lineHeight), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
 
-                # --- Frame Buffering and Tensor Preparation ---
-                frameBuffer.append(frame)
-
-                prediction = None
-                labels = None
-
-                if len(frameBuffer) >= frameBufferSize:
-                    currentFrameOrig = frameBuffer[-1]
-                    prevFrameOrig = frameBuffer[0]
-                    frameBuffer.pop(0)
-
-                prevImage = Image.fromarray(cv2.cvtColor(prevFrameOrig, cv2.COLOR_BGR2RGB))
-                currentImage = Image.fromarray(cv2.cvtColor(currentFrameOrig, cv2.COLOR_BGR2RGB))
-                prevImgTensor = transform(prevImage).unsqueeze(0).to(device)
-                currentImgTensor = transform(currentImage).unsqueeze(0).to(device)
-
-                # --- Prediction ---
-                prediction, _, _ = model(currentImgTensor, prevImgTensor)
 
                 # --- Ground Truth Trajectory ---
                 labels = None
@@ -218,12 +258,27 @@ def runModel(modelPath, videoPath, temporalContextTimeWindow=0.1):
                         labels = torch.tensor(labelsList[:12], dtype=torch.float32)
 
                 # --- Visualization ---
-                visualizePredictions(visualizeFrame, prediction.squeeze() if prediction is not None else None, labels)
+                attnMap = attnMaps[-1].squeeze().cpu().numpy() if attnMaps else None
+                visualizePredictions(visualizeFrame, prediction.squeeze() if prediction is not None else None, labels, attnMap)
 
                 # Check for quit key
                 key = cv2.waitKey(1)
+                if key != -1:
+                    print(f"Key pressed: {key}")
                 if key & 0xFF == ord('q'):
                     break
+                elif key == 106 or key == 242:  # J: go back 10s
+                    print("Seeking back 10 seconds")
+                    new_ms = max(0, currentVideoMs - 10000)
+                    cap.set(cv2.CAP_PROP_POS_MSEC, new_ms)
+                    frameBuffer = []
+                    nextFrameTime = time.time()
+                elif key == 108 or key == 243:  # L: go forward 10s
+                    print("Seeking forward 10 seconds")
+                    new_ms = currentVideoMs + 10000
+                    cap.set(cv2.CAP_PROP_POS_MSEC, new_ms)
+                    frameBuffer = []
+                    nextFrameTime = time.time()
 
                 # Update next frame time
                 nextFrameTime += timePerFrame
@@ -232,8 +287,22 @@ def runModel(modelPath, videoPath, temporalContextTimeWindow=0.1):
                 # Wait until next frame time
                 waitTime = (nextFrameTime - currentTime) * 1000
                 key = cv2.waitKey(max(1, int(waitTime)))
+                if key != -1:
+                    print(f"Key pressed: {key}")
                 if key & 0xFF == ord('q'):
                     break
+                elif key == 81 or key == 242:  # Left arrow: go back 10s
+                    print("Seeking back 10 seconds")
+                    new_ms = max(0, currentVideoMs - 10000)
+                    cap.set(cv2.CAP_PROP_POS_MSEC, new_ms)
+                    frameBuffer = []
+                    nextFrameTime = time.time()
+                elif key == 83 or key == 243:  # Right arrow: go forward 10s
+                    print("Seeking forward 10 seconds")
+                    new_ms = currentVideoMs + 10000
+                    cap.set(cv2.CAP_PROP_POS_MSEC, new_ms)
+                    frameBuffer = []
+                    nextFrameTime = time.time()
 
     # --- Cleanup ---
     cap.release()
@@ -241,6 +310,6 @@ def runModel(modelPath, videoPath, temporalContextTimeWindow=0.1):
 
 
 if __name__ == '__main__':
-    modelPath = r"D:\VS_Python_Project\Autopilot\Autopilot\training\run10\best_model.pth"
-    videoPath = r"D:\VS_Python_Project\Autopilot\Autopilot\Test_drive\2025.06.25\GP035971.MP4"
+    modelPath = r"D:\VS_Python_Project\Autopilot\Autopilot\training\run12\best_model.pth"
+    videoPath = r"D:\VS_Python_Project\Autopilot\Autopilot\Test_drive\2025.06.25\GP035970.MP4"
     runModel(modelPath, videoPath)

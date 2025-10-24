@@ -66,7 +66,7 @@ class DrivingDataset(Dataset):
             vectorsList = [list(map(float, v.split(","))) for v in vectorsLine.split(" ")]
             while len(vectorsList) < 6:
                 vectorsList.append([0.0, 0.0])
-            vectors = np.array(vectorsList[:12], dtype=np.float32)
+            vectors = np.array(vectorsList[:6], dtype=np.float32)
 
         speed = float(lines[1].strip().split(" : ")[1])
         dynamicData = torch.tensor([speed], dtype=self.dtype)
@@ -287,6 +287,17 @@ def trainModel(
 
             with autocast(device_type='cuda', enabled=useAmp):
                 preds, auxOut, _ = model(currentImg, prevImg, gt_traj=labels, teacher_forcing=True, tf_ratio=tfRatio)
+                
+                # Check for NaN in predictions
+                if torch.isnan(preds).any():
+                    print(f"NaN detected in predictions at epoch {epoch+1}, batch {i}")
+                    print(f"Preds: {preds}")
+                    print(f"Labels: {labels}")
+                    print(f"PrevImg stats: min={prevImg.min()}, max={prevImg.max()}, mean={prevImg.mean()}")
+                    print(f"CurrentImg stats: min={currentImg.min()}, max={currentImg.max()}, mean={currentImg.mean()}")
+                    # Skip this batch or break
+                    continue  # or break to stop training
+                
                 lossMain = trajectory_loss_with_weights(preds, labels, perStepWeights, reduction="mean")
                 loss = lossMain
 
@@ -300,7 +311,7 @@ def trainModel(
 
             if accumSteps == gradAccumSteps:
                 scaler.unscale_(optimizer)
-                torch.nn.utils.clip_grad_norm_(model.parameters(), 5.0)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)  # Reduced from 5.0
                 scaler.step(optimizer)
                 scaler.update()
                 optimizer.zero_grad()
@@ -345,6 +356,12 @@ def trainModel(
                 prevImg, currentImg, labels = prevImg.to(device), currentImg.to(device), labels.to(device)
                 with autocast(device_type='cuda', enabled=useAmp):
                     preds, _, _ = model(currentImg, prevImg, teacher_forcing=False, tf_ratio=0.0)
+                    
+                    # Check for NaN in validation predictions
+                    if torch.isnan(preds).any():
+                        print(f"NaN detected in validation predictions at epoch {epoch+1}, batch {i}")
+                        continue
+                    
                     lossMain = trajectory_loss_with_weights(preds, labels, perStepWeights, reduction="mean")
                 valLoss += lossMain.item() * labels.size(0)
                 ade, fde = ADE_FDE(preds, labels)
@@ -388,14 +405,14 @@ def trainModel(
 
 if __name__ == "__main__":
     datasetPath = r"D:\VS_Python_Project\Autopilot\Autopilot\dataset\output"
-    datasetMaxSize = 75_000   # Maximum number of samples to load from the dataset (None = use all available)
+    datasetMaxSize = None   # Maximum number of samples to load from the dataset (None = use all available)
     numEpochs = 150           # Total number of training epochs (full passes through the dataset)
     patience = 15             # Early stopping patience (stop if no val improvement for this many epochs)
     batchSize = 48            # Number of samples per training batch (controls GPU memory usage)
     gradAccumSteps = 1        # Gradient accumulation steps (simulates larger effective batch if >1)
-    learningRate = 3e-4       # Initial learning rate for the optimizer
-    featDim = 256             # Feature dimension of encoder output (controls model width / capacity)
-    hiddenDim = 256           # Hidden size of the GRU decoder (affects model memory and temporal capacity)
+    learningRate = 1e-4       # Reduced from 3e-4 to prevent instability
+    featDim = 512             # Feature dimension of encoder output (controls model width / capacity)
+    hiddenDim = 1024           # Hidden size of the GRU decoder (affects model memory and temporal capacity)
     predSteps = 6             # Number of waypoints (time steps) predicted for each sample
     useAuxDyn = False         # Whether to enable auxiliary dynamics head (speed/accel prediction)
 
