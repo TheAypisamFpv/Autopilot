@@ -15,7 +15,7 @@
 \maketitle
 
 \section{Overview}
-The TrajectoryModel is a neural network designed for predicting vehicle trajectories based on two input images (current and previous frames). It combines an early fusion encoder with an attentive GRU-based decoder, optionally including an auxiliary dynamics prediction head. The model processes input images of shape (B, 3, 270, 480), where B is the batch size, and outputs predicted trajectories of shape (B, 6, 2) for 6 future time steps, along with attention maps and optional auxiliary dynamics predictions.
+The TrajectoryModel is a neural network designed for predicting vehicle trajectories based on two input images (current and previous frames). It combines an early fusion encoder with an attentive GRU-based decoder, optionally including an auxiliary dynamics prediction head. The encoder includes vertical positional encoding to provide spatial priors for attention. The model processes input images of shape (B, 3, 270, 480), where B is the batch size, and outputs predicted trajectories of shape (B, 6, 2) for 6 future time steps, along with attention maps and optional auxiliary dynamics predictions.
 
 \section{Model Components}
 
@@ -43,14 +43,15 @@ The encoder fuses two input RGB images (current and previous, each of shape (B, 
             \item \textit{Layer1}: Residual (64), ConvGNAct (64 to 128, stride=2).
             \item \textit{Layer2}: Residual (128), ConvGNAct (128 to feat\_dim, stride=2).
             \item \textit{Projection}: 1x1 convolution (feat\_dim to feat\_dim).
+            \item \textit{Vertical Positional Encoding}: Adds a 1-channel positional encoding based on vertical position, with values from -1 to 1 in the useful vertical range (35\% to 84\% from top).
         \end{itemize}
-    \item \textbf{Output}: Feature map of shape (B, feat\_dim, H/16, W/16).
+    \item \textbf{Output}: Feature map of shape (B, feat\_dim + 1, H/16, W/16).
 \end{itemize}
 
 \subsection{SpatialAttentionDecoder}
 This module computes spatial attention over the encoder's feature map, conditioned on the decoder's hidden state.
 \begin{itemize}
-    \item \textbf{Parameters}: Feature dimension (feat\_dim), hidden dimension (hidden\_dim).
+    \item \textbf{Parameters}: Feature dimension (feat\_dim + 1), hidden dimension (hidden\_dim).
     \item \textbf{Components}:
         \begin{itemize}
             \item Key and value convolutions: 1x1 convolutions on the feature map.
@@ -68,7 +69,7 @@ This module computes spatial attention over the encoder's feature map, condition
 \subsection{AttentiveGRUDecoder}
 An autoregressive decoder using a GRUCell to predict future trajectory points.
 \begin{itemize}
-    \item \textbf{Parameters}: Feature dimension (feat\_dim), hidden dimension (hidden\_dim), prediction steps (pred\_steps=6).
+    \item \textbf{Parameters}: Feature dimension (feat\_dim + 1), hidden dimension (hidden\_dim), prediction steps (pred\_steps=6).
     \item \textbf{Components}:
         \begin{itemize}
             \item Initial hidden and cell state mappings from pooled features.
@@ -90,14 +91,14 @@ The full model integrates the encoder and decoder, with an optional auxiliary dy
     \item \textbf{Parameters}: Feature dimension (default 256), hidden dimension (default 256), prediction steps (default 6), use auxiliary dynamics (default False).
     \item \textbf{Components}:
         \begin{itemize}
-            \item EarlyFusionEncoder.
-            \item AttentiveGRUDecoder.
-            \item Optional auxiliary head: Predicts speed and acceleration from pooled features.
+            \item EarlyFusionEncoder (outputs feat\_dim + 1 channels with positional encoding).
+            \item AttentiveGRUDecoder (uses feat\_dim + 1).
+            \item Optional auxiliary head: Predicts speed and acceleration from pooled features (uses feat\_dim + 1).
         \end{itemize}
     \item \textbf{Forward}: Processes two input images, returns predictions, auxiliary outputs (if enabled), and attention maps.
 \end{itemize}
 
 \section{Summary}
-The TrajectoryModel is a compact yet expressive architecture for trajectory prediction, leveraging early fusion for input processing, spatial attention for feature interaction, and an autoregressive GRU for sequential prediction. Its modular design allows for flexibility in applications requiring vehicle trajectory forecasting.
+The TrajectoryModel is a compact yet expressive architecture for trajectory prediction, leveraging early fusion for input processing, vertical positional encoding for spatial priors, spatial attention for feature interaction, and an autoregressive GRU for sequential prediction. Its modular design allows for flexibility in applications requiring vehicle trajectory forecasting.
 
 \end{document}
