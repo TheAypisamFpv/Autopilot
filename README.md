@@ -67,16 +67,18 @@ Each sample in the dataset includes the image pair, current speed, and the groun
 
 ## Training
 
-### Current run in training: **run10**
-Updated parameters count from 17M to 23M, with an improved image processing and fully connected layers.
+### Current run in training: **run13**
+100 hours of training as of now at epoch 20.
 
-### Latest trained run: **run9**
+The new architecture reduced parameters from 23M to 8.8M while achieving better performance at equivalent training time.
 
-10 days of training, for... garbage, val loss is low, but the generalization is bad
+![run13 Training Loss](training/run13/Losschart_up_to_20.png)
 
-![run9_plot](training/run9/loss_plot.png)
+![run13 ADE & FDE Metrics](training/run13/ADE&FDEchart_up_to_20.png)
 
-(only the model with the lowest val loss is saved obviously)
+Check out a video demonstration of the model in action (at epoch 19):
+
+<a href="https://x.com/THEAYPISAMFPV/status/1982888965666681123">View the video demonstration on X</a>
 
 ## Q&A
 

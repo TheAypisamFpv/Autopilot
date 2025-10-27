@@ -68,15 +68,15 @@ def visualizePredictions(frame, predictions, groundTruth, attnMap=None):
 
     # Overlay attention map if provided
     if attnMap is not None:
-        # Resize attention map to frame size
         attnResized = cv2.resize(attnMap, (frame.shape[1], frame.shape[0]), interpolation=cv2.INTER_LINEAR)
-        # Normalize to 0-255
-        attnNorm = cv2.normalize(attnResized, None, 0, 255, cv2.NORM_MINMAX, cv2.CV_8U)
-        # Apply heatmap
-        heatmap = cv2.applyColorMap(attnNorm, cv2.COLORMAP_JET)
+        attnNorm = attnResized / (attnResized.max() + 1e-8)
+        attnDisplay = (attnNorm ** 0.5)  # gamma correction to amplify midrange
+        attnDisplay = (attnDisplay * 255).astype(np.uint8)
+        heatmap = cv2.applyColorMap(attnDisplay, cv2.COLORMAP_JET)
+
         # Overlay with alpha
         alpha = 0.2
-        frame = cv2.addWeighted(frame, 1 - alpha, heatmap, alpha, 0)
+        # frame = cv2.addWeighted(frame, 1 - alpha, heatmap, alpha, 0)
 
     # Resize frame to fit the display
     newWidth = frame.shape[1] // 2
@@ -87,9 +87,9 @@ def visualizePredictions(frame, predictions, groundTruth, attnMap=None):
     cv2.imshow("Prediction (blue) vs Ground Truth (green)", frame)
 
 
-def runModel(modelPath, videoPath, temporalContextTimeWindow=0.1):
+def runModel(modelPath, videoPath, temporalContextTimeWindow=0.1, useGPU=True):
     # --- Initialization ---
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = torch.device("cuda" if useGPU and torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
     model = TrajectoryModel(feat_dim=512, hidden_dim=1024, pred_steps=12).to(device)
     model.load_state_dict(torch.load(modelPath))
@@ -177,13 +177,17 @@ def runModel(modelPath, videoPath, temporalContextTimeWindow=0.1):
                     prevImgTensor = transform(prevImage).unsqueeze(0).to(device)
                     currentImgTensor = transform(currentImage).unsqueeze(0).to(device)
 
-                    OgSize = visualizeFrame.shape
-                    visualizeFrame = cv2.resize(currentFrameOrig, (480, 270))
-                    visualizeFrame = cv2.resize(visualizeFrame, (OgSize[1], OgSize[0]))
+                    # OgSize = visualizeFrame.shape
+                    # visualizeFrame = cv2.resize(currentFrameOrig, (480, 270))
+                    # visualizeFrame = cv2.resize(visualizeFrame, (OgSize[1], OgSize[0]))
                     
 
                     # --- Prediction ---
                     prediction, _, attnMaps = model(currentImgTensor, prevImgTensor)
+
+                    if attnMap is not None:
+                        print(f"Attention map stats: min={attnMap.min():.4f}, max={attnMap.max():.4f}, mean={attnMap.mean():.4f}")
+
 
                     # Show previous frame with attention map
                     # if attnMaps:
@@ -310,6 +314,7 @@ def runModel(modelPath, videoPath, temporalContextTimeWindow=0.1):
 
 
 if __name__ == '__main__':
-    modelPath = r"D:\VS_Python_Project\Autopilot\Autopilot\training\run12\best_model.pth"
-    videoPath = r"D:\VS_Python_Project\Autopilot\Autopilot\Test_drive\2025.06.25\GP035970.MP4"
-    runModel(modelPath, videoPath)
+    modelPath = r"D:\VS_Python_Project\Autopilot\Autopilot\training\run13\best_model.pth"
+    videoPath = r"D:\VS_Python_Project\Autopilot\Autopilot\Test_drive\2025.06.18\GP015958.MP4"
+    useGPU = False
+    runModel(modelPath, videoPath, useGPU=useGPU)

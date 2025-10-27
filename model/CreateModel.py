@@ -178,7 +178,7 @@ if __name__ == "__main__":
     batchSize = 2
     dummyImg1 = torch.randn(batchSize, 3, 270, 480)
     dummyImg2 = torch.randn(batchSize, 3, 270, 480)
-    model = TrajectoryModel(feat_dim=256, hidden_dim=256, pred_steps=6, use_aux_dyn=True)
+    model = TrajectoryModel(feat_dim=512, hidden_dim=1024, pred_steps=6, use_aux_dyn=True)
     model.eval()
     
     with torch.no_grad():

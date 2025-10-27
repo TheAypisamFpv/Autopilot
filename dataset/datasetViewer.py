@@ -74,6 +74,8 @@ def viewRandomItem(datasetDir):
         print("No label files found in the directory.")
         return
     
+    print(f"Total datapoints: {len(labelFiles)}")
+    
     labelFiles.sort()
     currentIndex = random.randint(0, len(labelFiles) - 1)
 
