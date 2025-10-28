@@ -1,16 +1,12 @@
 import torch
-import torch.nn as nn
 from torchvision import transforms
 import os
 from PIL import Image
 import numpy as np
 import cv2
-import json
-from datetime import datetime, timedelta
+from datetime import timedelta
 import math
 import time
-from typing import List, Tuple, Dict, Any
-import sys
 
 from model.CreateModel import TrajectoryModel
 from dataset.generator import (
@@ -22,7 +18,7 @@ from dataset.generator import (
 )
 
 blue = (251, 152, 52) #RGB 52, 152, 251
-green = (52, 251, 152) #RGB 52, 251, 152
+gray = (128, 128, 128)
 
 def putTextWithOutline(frame, text, org, fontFace, fontScale, color, thickness=1):
     """Draws text with a black outline."""
@@ -31,16 +27,22 @@ def putTextWithOutline(frame, text, org, fontFace, fontScale, color, thickness=1
     # Draw the main text in the specified color
     cv2.putText(frame, text, org, fontFace, fontScale, color, thickness, cv2.LINE_AA)
 
-def visualizePredictions(frame, predictions, groundTruth, attnMap=None):
-    originPoint = (frame.shape[1] // 2, frame.shape[0] - 5)
-    vecToPixel = 20
-    vectorThickness = 15
+def visualizePredictions(frame, predictions, groundTruth, attnMap=None, warpingMatrix=None, dstPoints=None):
+    trajectoryCanvasWidth = 1000
+    trajectoryCanvasHeight = 1500
+    trajectoryFrame = np.zeros((trajectoryCanvasHeight, trajectoryCanvasWidth, 4), dtype=np.uint8)  # BGRA
+    vecToPixel = 20 # pixels per meter
+    vectorThickness = 40
+    originPoint = (trajectoryCanvasWidth // 2, trajectoryCanvasHeight - vectorThickness)
+    
+    # Parameters for perspective warp using angles
+    # trajAngle = 0  # degrees, 0 parallel to image plane, 90 perpendicular
+    # translationY = 0.0  # meters, up/down
+    # translationZ = 20.0  # meters, forward/backward
+    # scale = 1.0  # overall scale
+    
 
-    # add text about which trajectory is which
-    putTextWithOutline(frame, "Predicted (blue)", (10, originPoint[1] - 50), cv2.FONT_HERSHEY_SIMPLEX, 1, blue, 2)
-    putTextWithOutline(frame, "Ground Truth (green)", (10, originPoint[1] - 10), cv2.FONT_HERSHEY_SIMPLEX, 1, green, 2)
-
-    # Draw ground truth trajectory (green)
+    # Draw ground truth trajectory (gray)
     if groundTruth is not None and len(groundTruth) > 0:
         currentPointGt = originPoint
         if isinstance(groundTruth, torch.Tensor):
@@ -48,10 +50,10 @@ def visualizePredictions(frame, predictions, groundTruth, attnMap=None):
         for point in groundTruth:
             endXGt = int(currentPointGt[0] + point[0] * vecToPixel)
             endYGt = int(currentPointGt[1] - point[1] * vecToPixel)
-            cv2.line(frame, currentPointGt, (endXGt, endYGt), green, vectorThickness, cv2.LINE_AA)
+            cv2.line(trajectoryFrame, currentPointGt, (endXGt, endYGt), (*gray, 255), vectorThickness, cv2.LINE_AA)
             currentPointGt = (endXGt, endYGt)
             
-            cv2.line(frame, currentPointGt, (currentPointGt[0]+200, currentPointGt[1]), (0, 0, 0), 2, cv2.LINE_AA)
+            # cv2.line(trajectoryFrame, currentPointGt, (currentPointGt[0]+200, currentPointGt[1]), (0, 0, 0), 2, cv2.LINE_AA)
 
     # Draw predicted trajectory (blue)
     if predictions is not None:
@@ -61,10 +63,102 @@ def visualizePredictions(frame, predictions, groundTruth, attnMap=None):
         for point in predictions:
             endXPred = int(currentPointPred[0] + point[0] * vecToPixel)
             endYPred = int(currentPointPred[1] - point[1] * vecToPixel)
-            cv2.line(frame, currentPointPred, (endXPred, endYPred), blue, vectorThickness, cv2.LINE_AA)
+            cv2.line(trajectoryFrame, currentPointPred, (endXPred, endYPred), (*blue, 255), vectorThickness, cv2.LINE_AA)
             currentPointPred = (endXPred, endYPred)
             
-            cv2.line(frame, currentPointPred, (currentPointPred[0]-200, currentPointPred[1]), (0, 0, 0), 2, cv2.LINE_AA)
+            # cv2.line(trajectoryFrame, currentPointPred, (currentPointPred[0]-200, currentPointPred[1]), (0, 0, 0), 2, cv2.LINE_AA)
+
+    # Apply 3D warping
+    srcPoints = np.array([(0, 0), (trajectoryCanvasWidth - 1, 0), (trajectoryCanvasWidth - 1, trajectoryCanvasHeight - 1), (0, trajectoryCanvasHeight - 1)], dtype=np.float32)
+    
+    if warpingMatrix is not None:
+        M = warpingMatrix
+        if dstPoints is None:
+            # Fallback: compute dstPoints if not provided
+            centerX = frame.shape[1] // 2
+            centerY = frame.shape[0] // 2
+            f = 1000
+            cx = centerX
+            cy = centerY
+            w = 50 * 1.0  # scale=1.0
+            h = 75 * 1.0
+            d = 39  # translationZ
+            theta = -math.radians(102)  # trajAngle
+            R = np.array([
+                [1, 0, 0],
+                [0, math.cos(theta), -math.sin(theta)],
+                [0, math.sin(theta), math.cos(theta)]
+            ])
+            center_world = np.array([0, 11, d])  # translationY
+            corners_local = [
+                (-w/2, h/2, 0),
+                (w/2, h/2, 0),
+                (w/2, -h/2, 0),
+                (-w/2, -h/2, 0)
+            ]
+            dstPointsComputed = []
+            for local in corners_local:
+                world = R @ np.array(local) + center_world
+                if world[2] > 0:
+                    u = f * world[0] / world[2] + cx
+                    v = f * world[1] / world[2] + cy
+                    dstPointsComputed.append((u, v))
+                else:
+                    dstPointsComputed.append((cx, cy))
+            dstPointsComputed = np.array(dstPointsComputed, dtype=np.float32)
+            dstPointsComputed = dstPointsComputed[::-1]
+            dstPoints = dstPointsComputed
+    else:
+        # Original computation (for backward compatibility)
+        centerX = frame.shape[1] // 2
+        centerY = frame.shape[0] // 2
+        f = 1000
+        cx = centerX
+        cy = centerY
+        w = 50 * 1.0
+        h = 75 * 1.0
+        d = 39
+        theta = -math.radians(102)
+        R = np.array([
+            [1, 0, 0],
+            [0, math.cos(theta), -math.sin(theta)],
+            [0, math.sin(theta), math.cos(theta)]
+        ])
+        center_world = np.array([0, 11, d])
+        corners_local = [
+            (-w/2, h/2, 0),
+            (w/2, h/2, 0),
+            (w/2, -h/2, 0),
+            (-w/2, -h/2, 0)
+        ]
+        dstPoints = []
+        for local in corners_local:
+            world = R @ np.array(local) + center_world
+            if world[2] > 0:
+                u = f * world[0] / world[2] + cx
+                v = f * world[1] / world[2] + cy
+                dstPoints.append((u, v))
+            else:
+                dstPoints.append((cx, cy))
+        dstPoints = np.array(dstPoints, dtype=np.float32)
+        dstPoints = dstPoints[::-1]
+        M = cv2.getPerspectiveTransform(srcPoints, dstPoints)
+    
+    warped = cv2.warpPerspective(trajectoryFrame, M, (frame.shape[1], frame.shape[0]))
+    
+    # Blend with alpha
+    alpha = warped[..., 3] / 255.0
+    frame = ((1 - alpha[..., None]) * frame + alpha[..., None] * warped[..., :3]).astype(np.uint8)
+
+    # Draw red dots on visualizeFrame at destination points
+    # for i, pt in enumerate(dstPoints):
+    #     cv2.circle(frame, tuple(pt.astype(int)), 10, (0, 0, 255), -1)
+    #     # Draw lines between points
+    #     cv2.line(frame, tuple(dstPoints[i].astype(int)), tuple(dstPoints[(i+1)%len(dstPoints)].astype(int)), (0, 0, 255), 2)
+
+    # Add trajectory labels on the main frame
+    putTextWithOutline(frame, "Predicted (blue)", (10, frame.shape[0] - 100), cv2.FONT_HERSHEY_SIMPLEX, 1, blue, 2)
+    putTextWithOutline(frame, "Ground Truth (gray)", (10, frame.shape[0] - 60), cv2.FONT_HERSHEY_SIMPLEX, 1, gray, 2)
 
     # Overlay attention map if provided
     if attnMap is not None:
@@ -76,15 +170,20 @@ def visualizePredictions(frame, predictions, groundTruth, attnMap=None):
 
         # Overlay with alpha
         alpha = 0.2
-        # frame = cv2.addWeighted(frame, 1 - alpha, heatmap, alpha, 0)
+        # Frame = cv2.addWeighted(frame, 1 - alpha, heatmap, alpha, 0)
+        heatmap = cv2.resize(heatmap, (frame.shape[1] // 5, frame.shape[0] // 5))
+        cv2.imshow("Attention Map Overlay", heatmap)
 
     # Resize frame to fit the display
     newWidth = frame.shape[1] // 2
     newHeight = frame.shape[0] // 2
 
+    trajectoryResized = cv2.resize(trajectoryFrame, (trajectoryFrame.shape[1] // 4, trajectoryFrame.shape[0] // 4))
+    cv2.imshow("Trajectory Frame", trajectoryResized)
+
     frame = cv2.resize(frame, (newWidth, newHeight))
 
-    cv2.imshow("Prediction (blue) vs Ground Truth (green)", frame)
+    cv2.imshow("Prediction (blue) vs Ground Truth (gray)", frame)
 
 
 def runModel(modelPath, videoPath, temporalContextTimeWindow=0.1, useGPU=True):
@@ -92,7 +191,7 @@ def runModel(modelPath, videoPath, temporalContextTimeWindow=0.1, useGPU=True):
     device = torch.device("cuda" if useGPU and torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
     model = TrajectoryModel(feat_dim=512, hidden_dim=1024, pred_steps=12).to(device)
-    model.load_state_dict(torch.load(modelPath))
+    model.load_state_dict(torch.load(modelPath, map_location=device))
     model.eval()
 
     transformVisual = transforms.Compose([
@@ -127,6 +226,56 @@ def runModel(modelPath, videoPath, temporalContextTimeWindow=0.1, useGPU=True):
             print("Error: Could not open video with any backend.")
             return
 
+    # Get frame dimensions for warping
+    ret, testFrame = cap.read()
+    if not ret:
+        print("Error: Could not read first frame.")
+        return
+    frameHeight, frameWidth = testFrame.shape[:2]
+    cap.set(cv2.CAP_PROP_POS_MSEC, 0)  # Reset to beginning
+
+    # Precompute warping matrix and points
+    trajAngle = 102
+    translationY = 11
+    translationZ = 39
+    scale = 1.0
+    trajectoryCanvasWidth = 1000
+    trajectoryCanvasHeight = 1500
+    srcPoints = np.array([(0, 0), (trajectoryCanvasWidth - 1, 0), (trajectoryCanvasWidth - 1, trajectoryCanvasHeight - 1), (0, trajectoryCanvasHeight - 1)], dtype=np.float32)
+    centerX = frameWidth // 2
+    centerY = frameHeight // 2
+    f = 1000
+    cx = centerX
+    cy = centerY
+    w = 50 * scale
+    h = 75 * scale
+    d = translationZ
+    theta = -math.radians(trajAngle)
+    R = np.array([
+        [1, 0, 0],
+        [0, math.cos(theta), -math.sin(theta)],
+        [0, math.sin(theta), math.cos(theta)]
+    ])
+    center_world = np.array([0, translationY, d])
+    corners_local = [
+        (-w/2, h/2, 0),
+        (w/2, h/2, 0),
+        (w/2, -h/2, 0),
+        (-w/2, -h/2, 0)
+    ]
+    dstPoints = []
+    for local in corners_local:
+        world = R @ np.array(local) + center_world
+        if world[2] > 0:
+            u = f * world[0] / world[2] + cx
+            v = f * world[1] / world[2] + cy
+            dstPoints.append((u, v))
+        else:
+            dstPoints.append((cx, cy))
+    dstPoints = np.array(dstPoints, dtype=np.float32)
+    dstPoints = dstPoints[::-1]  # Reverse order
+    warpingMatrix = cv2.getPerspectiveTransform(srcPoints, dstPoints)
+
     fps = cap.get(cv2.CAP_PROP_FPS)
     if fps == 0: fps = 30
     timePerFrame = 1.0 / fps
@@ -134,6 +283,17 @@ def runModel(modelPath, videoPath, temporalContextTimeWindow=0.1, useGPU=True):
     frameBuffer = []
     frameBufferSize = max(int(fps * temporalContextTimeWindow), 2)
     nextFrameTime = time.time()
+
+    # Create control window with sliders
+    # cv2.namedWindow("Controls")
+    # cv2.createTrackbar("Traj Angle", "Controls", 0, 150, lambda x: None)  # 0 parallel, 150 perpendicular
+    # cv2.createTrackbar("Translation Y", "Controls", 50, 100, lambda x: None)  # 0 = -50m, 50 = 0m, 100 = 50m
+    # cv2.createTrackbar("Translation Z", "Controls", 30, 80, lambda x: None)  # 0 = 20m, 30 = 50m, 80 = 100m
+    # cv2.createTrackbar("Scale", "Controls", 10, 20, lambda x: None)  # 10 = 1.0, 20 = 2.0
+
+    lastPrediction = None
+    lastLabels = None
+    lastAttnMap = None
 
     # --- Main Processing Loop ---
     with torch.no_grad():
@@ -187,6 +347,9 @@ def runModel(modelPath, videoPath, temporalContextTimeWindow=0.1, useGPU=True):
 
                     if attnMap is not None:
                         print(f"Attention map stats: min={attnMap.min():.4f}, max={attnMap.max():.4f}, mean={attnMap.mean():.4f}")
+
+                    lastPrediction = prediction
+                    lastAttnMap = attnMaps[-1].squeeze().cpu().numpy() if attnMaps else None
 
 
                     # Show previous frame with attention map
@@ -261,26 +424,33 @@ def runModel(modelPath, videoPath, temporalContextTimeWindow=0.1, useGPU=True):
                         labelsList = [[v['x'], v['y']] for v in validVectors]
                         labels = torch.tensor(labelsList[:12], dtype=torch.float32)
 
+                lastLabels = labels
+
                 # --- Visualization ---
-                attnMap = attnMaps[-1].squeeze().cpu().numpy() if attnMaps else None
-                visualizePredictions(visualizeFrame, prediction.squeeze() if prediction is not None else None, labels, attnMap)
+                attnMap = lastAttnMap
+                visualizePredictions(visualizeFrame, lastPrediction.squeeze() if lastPrediction is not None else None, lastLabels, attnMap, warpingMatrix, dstPoints)
 
                 # Check for quit key
                 key = cv2.waitKey(1)
                 if key != -1:
                     print(f"Key pressed: {key}")
                 if key & 0xFF == ord('q'):
+                    print(f"Final warping parameters:")
+                    print(f"Traj Angle: 102°")
+                    print(f"Translation Y: 11m")
+                    print(f"Translation Z: 39m")
+                    print(f"Scale: 1.0")
                     break
                 elif key == 106 or key == 242:  # J: go back 10s
                     print("Seeking back 10 seconds")
-                    new_ms = max(0, currentVideoMs - 10000)
-                    cap.set(cv2.CAP_PROP_POS_MSEC, new_ms)
+                    newMs = max(0, currentVideoMs - 10000)
+                    cap.set(cv2.CAP_PROP_POS_MSEC, newMs)
                     frameBuffer = []
                     nextFrameTime = time.time()
                 elif key == 108 or key == 243:  # L: go forward 10s
                     print("Seeking forward 10 seconds")
-                    new_ms = currentVideoMs + 10000
-                    cap.set(cv2.CAP_PROP_POS_MSEC, new_ms)
+                    newMs = currentVideoMs + 10000
+                    cap.set(cv2.CAP_PROP_POS_MSEC, newMs)
                     frameBuffer = []
                     nextFrameTime = time.time()
 
@@ -290,31 +460,42 @@ def runModel(modelPath, videoPath, temporalContextTimeWindow=0.1, useGPU=True):
             else:
                 # Wait until next frame time
                 waitTime = (nextFrameTime - currentTime) * 1000
+
+                # --- Visualization ---
+                attnMap = lastAttnMap
+                visualizePredictions(visualizeFrame, lastPrediction.squeeze() if lastPrediction is not None else None, lastLabels, attnMap, warpingMatrix, dstPoints)
+
                 key = cv2.waitKey(max(1, int(waitTime)))
                 if key != -1:
                     print(f"Key pressed: {key}")
                 if key & 0xFF == ord('q'):
+                    print(f"Final warping parameters:")
+                    print(f"Traj Angle: 102°")
+                    print(f"Translation Y: 11m")
+                    print(f"Translation Z: 39m")
+                    print(f"Scale: 1.0")
                     break
-                elif key == 81 or key == 242:  # Left arrow: go back 10s
+                elif key == 2424832 or key == 242:  # Left arrow: go back 10s
                     print("Seeking back 10 seconds")
-                    new_ms = max(0, currentVideoMs - 10000)
-                    cap.set(cv2.CAP_PROP_POS_MSEC, new_ms)
+                    newMs = max(0, currentVideoMs - 10000)
+                    cap.set(cv2.CAP_PROP_POS_MSEC, newMs)
                     frameBuffer = []
                     nextFrameTime = time.time()
-                elif key == 83 or key == 243:  # Right arrow: go forward 10s
+                elif key == 2555904 or key == 243:  # Right arrow: go forward 10s
                     print("Seeking forward 10 seconds")
-                    new_ms = currentVideoMs + 10000
-                    cap.set(cv2.CAP_PROP_POS_MSEC, new_ms)
+                    newMs = currentVideoMs + 10000
+                    cap.set(cv2.CAP_PROP_POS_MSEC, newMs)
                     frameBuffer = []
                     nextFrameTime = time.time()
 
     # --- Cleanup ---
     cap.release()
     cv2.destroyAllWindows()
+    # cv2.destroyWindow("Controls")
 
 
 if __name__ == '__main__':
-    modelPath = r"D:\VS_Python_Project\Autopilot\Autopilot\training\run13\best_model.pth"
-    videoPath = r"D:\VS_Python_Project\Autopilot\Autopilot\Test_drive\2025.06.18\GP015958.MP4"
+    modelPath = r"C:\Users\Aypisam\Documents\VS_Python_Project\Autopilot\training\run13\best_model.pth"
+    videoPath = r"C:\Users\Aypisam\Documents\VS_Python_Project\Autopilot\test_drive\2025.06.24\GP065969.MP4"
     useGPU = False
     runModel(modelPath, videoPath, useGPU=useGPU)
