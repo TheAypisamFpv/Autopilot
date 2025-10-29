@@ -97,7 +97,8 @@ def extractGpsData(videoPath: str):
 
             timestampStr = timestampToWrite.isoformat() if isinstance(timestampToWrite, datetime) else str(timestampToWrite)
 
-            # The fix and precision are per-block, not per-sample            # Access values safely, handling both array and scalar cases
+            # The fix and precision are per-block, not per-sample
+            # Access values safely, handling both array and scalar cases
             latitude = gpsBlock.latitude[j] if isinstance(gpsBlock.latitude, (np.ndarray, list)) else gpsBlock.latitude
             longitude = gpsBlock.longitude[j] if isinstance(gpsBlock.longitude, (np.ndarray, list)) else gpsBlock.longitude
             altitude = gpsBlock.altitude[j] if isinstance(gpsBlock.altitude, (np.ndarray, list)) else gpsBlock.altitude
@@ -231,125 +232,71 @@ def extractGpsData(videoPath: str):
             gpsPoints[i]['heading'] = gpsPoints[i-1].get('heading', 0) if i > 0 else 0
 
     # Third pass: Calculate instantaneous turn rates and acceleration
-    # Third pass: Calculate instantaneous turn rates and acceleration
-    instantaneousTurnRates = [0] * len(gpsPoints)
+    instantaneousTurnRates = [0.0] * len(gpsPoints)
     for i in range(1, len(gpsPoints)):
-        if (gpsPoints[i]['timestamp'] - recordingStartTime).total_seconds() < 1.0:
+        elapsed = (gpsPoints[i]['timestamp'] - recordingStartTime).total_seconds()
+        if elapsed < 1.0:
             continue
 
-        # Calculate turn rate
-        # Calculate turn rate
-        heading1 = gpsPoints[i-1]['heading']
+        heading1 = gpsPoints[i - 1]['heading']
         heading2 = gpsPoints[i]['heading']
         headingChange = heading2 - heading1
-        if headingChange > 180: headingChange -= 360
-        elif headingChange < -180: headingChange += 360
-        
-        # Time difference between consecutive points
-        
-        # Time difference between consecutive points
-        timeDiff = (gpsPoints[i]['timestamp'] - gpsPoints[i-1]['timestamp']).total_seconds()
-        
-        
-        if timeDiff > 0:
-            # Calculate turn rate
-            # Calculate turn rate
-            instantaneousTurnRates[i] = headingChange / timeDiff
-            
-            # Calculate acceleration (m/s²) from speed difference
-            speedDiff = gpsPoints[i]['speed2d'] - gpsPoints[i-1]['speed2d']
-            gpsPoints[i]['acceleration'] = speedDiff / timeDiff
-        else:
-            # Default acceleration if time difference is zero
+        if headingChange > 180:
+            headingChange -= 360
+        elif headingChange < -180:
+            headingChange += 360
+
+        timeDiff = (gpsPoints[i]['timestamp'] - gpsPoints[i - 1]['timestamp']).total_seconds()
+        if timeDiff <= 0:
             gpsPoints[i]['acceleration'] = 0.0
+            continue
 
+        instantaneousTurnRates[i] = headingChange / timeDiff
+        speedDiff = gpsPoints[i]['speed2d'] - gpsPoints[i - 1]['speed2d']
+        gpsPoints[i]['acceleration'] = speedDiff / timeDiff
 
-    print(".", end='')    
-    
+    print(".", end='')
+
     # Default acceleration for the first point
-    gpsPoints[0]['acceleration'] = 0.0    # Fourth pass: Average turn rates and accelerations over a symmetric rolling window (+/- 0.5s)
-            
-            # Calculate acceleration (m/s²) from speed difference
-            speedDiff = gpsPoints[i]['speed2d'] - gpsPoints[i-1]['speed2d']
-            gpsPoints[i]['acceleration'] = speedDiff / timeDiff
-        else:
-            # Default acceleration if time difference is zero
-            gpsPoints[i]['acceleration'] = 0.0
+    gpsPoints[0]['acceleration'] = 0.0
 
+    # Fourth pass: Average turn rates and accelerations over a symmetric rolling window (+/- 0.5s)
+    averagedTurnRates = [0.0] * len(gpsPoints)
+    averagedAccelerations = [0.0] * len(gpsPoints)
 
-    print(".", end='')    
-    
-    # Default acceleration for the first point
-    gpsPoints[0]['acceleration'] = 0.0    # Fourth pass: Average turn rates and accelerations over a symmetric rolling window (+/- 0.5s)
-    averagedTurnRates = [0] * len(gpsPoints)
-    averagedAccelerations = [0] * len(gpsPoints)
-    
-    averagedAccelerations = [0] * len(gpsPoints)
-    
     for i in range(len(gpsPoints)):
         startTimeWindow = gpsPoints[i]['timestamp'] - timedelta(seconds=0.5)
         endTimeWindow = gpsPoints[i]['timestamp']
-        
-        # Collect points within the time window
-        pointsInWindow = []
-        for k in range(len(gpsPoints)):
-            if startTimeWindow <= gpsPoints[k]['timestamp'] <= endTimeWindow:
-                pointsInWindow.append(k)
-        
-        # Average turn rates in window
-        ratesInWindow = [instantaneousTurnRates[k] for k in pointsInWindow]
-        endTimeWindow = gpsPoints[i]['timestamp']
-        
-        # Collect points within the time window
-        pointsInWindow = []
-        for k in range(len(gpsPoints)):
-            if startTimeWindow <= gpsPoints[k]['timestamp'] <= endTimeWindow:
-                pointsInWindow.append(k)
-        
-        # Average turn rates in window
-        ratesInWindow = [instantaneousTurnRates[k] for k in pointsInWindow]
-        if ratesInWindow:
-            averagedTurnRates[i] = sum(ratesInWindow) / len(ratesInWindow)
 
-        # Average accelerations in window
-        accelsInWindow = [gpsPoints[k].get('acceleration', 0.0) for k in pointsInWindow if k > 0]  # Skip first point
-        if accelsInWindow:
-            averagedAccelerations[i] = sum(accelsInWindow) / len(accelsInWindow)
-            
+        indicesInWindow = [
+            idx for idx, point in enumerate(gpsPoints)
+            if startTimeWindow <= point['timestamp'] <= endTimeWindow
+        ]
 
-        # Average accelerations in window
-        accelsInWindow = [gpsPoints[k].get('acceleration', 0.0) for k in pointsInWindow if k > 0]  # Skip first point
-        if accelsInWindow:
-            averagedAccelerations[i] = sum(accelsInWindow) / len(accelsInWindow)
-            
+        if indicesInWindow:
+            averagedTurnRates[i] = sum(instantaneousTurnRates[idx] for idx in indicesInWindow) / len(indicesInWindow)
+
+            accelValues = [gpsPoints[idx].get('acceleration', 0.0) for idx in indicesInWindow if idx > 0]
+            if accelValues:
+                averagedAccelerations[i] = sum(accelValues) / len(accelValues)
+
     print(".", end='\r')
-    # Fifth pass: Apply additional smoothing to turn rate and acceleration, then add max speed
+
     # Fifth pass: Apply additional smoothing to turn rate and acceleration, then add max speed
     for i in range(len(gpsPoints)):
-        # Apply further smoothing with a 3-point moving average
-        # Apply further smoothing with a 3-point moving average
-        if i > 0 and i < len(gpsPoints) - 1:
-            # Smooth turn rate
-            # Smooth turn rate
-            gpsPoints[i]['turnRate'] = (averagedTurnRates[i-1] + averagedTurnRates[i] + averagedTurnRates[i+1]) / 3
-            
-            # Smooth acceleration
-            smoothedAccel = (averagedAccelerations[i-1] + averagedAccelerations[i] + averagedAccelerations[i+1]) / 3
-            
-            # Apply additional clamping to acceleration to reduce extreme values
-            gpsPoints[i]['acceleration'] = max(min(smoothedAccel, 3.0), -3.0)
-            
-            # Smooth acceleration
-            smoothedAccel = (averagedAccelerations[i-1] + averagedAccelerations[i] + averagedAccelerations[i+1]) / 3
-            
-            # Apply additional clamping to acceleration to reduce extreme values
-            gpsPoints[i]['acceleration'] = max(min(smoothedAccel, 3.0), -3.0)
+        if 0 < i < len(gpsPoints) - 1:
+            turnRate = (
+                averagedTurnRates[i - 1] + averagedTurnRates[i] + averagedTurnRates[i + 1]
+            ) / 3
+            smoothedAccel = (
+                averagedAccelerations[i - 1] + averagedAccelerations[i] + averagedAccelerations[i + 1]
+            ) / 3
         else:
-            gpsPoints[i]['turnRate'] = averagedTurnRates[i]
-            gpsPoints[i]['acceleration'] = max(min(averagedAccelerations[i], 3.0), -3.0)
-        
-            gpsPoints[i]['acceleration'] = max(min(averagedAccelerations[i], 3.0), -3.0)
-        
+            turnRate = averagedTurnRates[i]
+            smoothedAccel = averagedAccelerations[i]
+
+        gpsPoints[i]['turnRate'] = turnRate
+        gpsPoints[i]['acceleration'] = max(min(smoothedAccel, 3.0), -3.0)
         gpsPoints[i]['maxSpeed'] = maxSpeed
         gpsPoints[i]['timestamp'] = gpsPoints[i]['timestamp'].isoformat()
 
@@ -360,29 +307,21 @@ def extractGpsData(videoPath: str):
 
     print(f'Extracting GPS data from "{videoPath}" Done.')
 
-def main(path:str):
-def main(path:str):
 
-    if os.path.isdir(path):
-        print(f"Processing all MP4 files in directory: {path}...\n")
-        for file in os.listdir(path):
+def main(path:str):
     if os.path.isdir(path):
         print(f"Processing all MP4 files in directory: {path}...\n")
         for file in os.listdir(path):
             if file.lower().endswith('.mp4'):
-                videoPath = os.path.join(path, file)
                 videoPath = os.path.join(path, file)
                 extractGpsData(videoPath)
                 print()
                 
     elif os.path.isfile(path) and path.lower().endswith('.mp4'):
         extractGpsData(path)
-    elif os.path.isfile(path) and path.lower().endswith('.mp4'):
-        extractGpsData(path)
     else:
-        print(f"Error: The path '{path}' is not a valid MP4 file or directory.")
         print(f"Error: The path '{path}' is not a valid MP4 file or directory.")
 
 if __name__ == "__main__":
-    path = r"D:\VS_Python_Project\Autopilot\Autopilot\Test_drive\2025.06.25"
+    path = r"C:\Users\Aypisam\Documents\VS_Python_Project\Autopilot\test_drive\2025.08.19"
     main(path)

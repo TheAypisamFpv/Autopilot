@@ -102,16 +102,16 @@ def visualizePredictions(frame, predictions, groundTruth, attnMap=None, warpingM
             [0, math.cos(theta), -math.sin(theta)],
             [0, math.sin(theta), math.cos(theta)]
         ])
-        center_world = np.array([0, 11, d])
-        corners_local = [
+        centerWorld = np.array([0, 11, d])
+        cornersLocal = [
             (-w/2, h/2, 0),
             (w/2, h/2, 0),
             (w/2, -h/2, 0),
             (-w/2, -h/2, 0)
         ]
         dstPointsComputed = []
-        for local in corners_local:
-            world = R @ np.array(local) + center_world
+        for local in cornersLocal:
+            world = R @ np.array(local) + centerWorld
             if world[2] > 0:
                 u = f * world[0] / world[2] + cx
                 v = f * world[1] / world[2] + cy
@@ -173,7 +173,7 @@ def visualizePredictions(frame, predictions, groundTruth, attnMap=None, warpingM
 
     if not gpsIsValid:
         warningText = "Warning: Low GPS quality"
-        cv2.putText(scaledFrame, warningText, (textX, textYStart + 6 * lineHeight), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 1)
+        cv2.putText(scaledFrame, warningText, (textX, textYStart + 6 * lineHeight), cv2.FONT_HERSHEY_SIMPLEX, fontScale, (0, 0, 255), thickness)
 
     # Add trajectory labels on the main frame
     putTextWithOutline(scaledFrame, "Predicted (blue)", (10, scaledFrame.shape[0] - 50), cv2.FONT_HERSHEY_SIMPLEX, fontScale, blue, thickness)
@@ -488,5 +488,5 @@ if __name__ == '__main__':
     
     
     modelPath = r"C:\Users\Aypisam\Documents\VS_Python_Project\Autopilot\training\run13\best_model.pth"
-    videoPath = r"C:\Users\Aypisam\Documents\VS_Python_Project\Autopilot\test_drive\2025.06.24\GP065969.MP4"
+    videoPath = r"C:\Users\Aypisam\Documents\VS_Python_Project\Autopilot\test_drive\2025.08.19\GP025986.MP4"
     runModel(modelPath, videoPath)

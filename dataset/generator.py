@@ -694,16 +694,15 @@ def main(Path: str, outputDir: str, frameInterval: int, vectorsNumbers: int, vec
 
 
 if __name__ == "__main__":
-    # Hardcoded values - no arguments or parser
-    videoPath = r"D:\VS_Python_Project\Autopilot\Autopilot\Test_drive\2025.06.25"
-    outputDir = r"D:\VS_Python_Project\Autopilot\Autopilot\dataset\output"
+    videoPath = r"C:\Users\Aypisam\Documents\VS_Python_Project\Autopilot\test_drive\2025.08.25"
+    outputDir = r"C:\Users\Aypisam\Documents\VS_Python_Project\Autopilot\dataset\output"
     frameInterval = 0 # interval between each frame sample, in seconds
     vectorsNumbers = 12
     vectorTimeWindow = 3.0 # seconds
 
     temporalContextTimeWindow = 0.1 # seconds
 
-    manualStartIndex = 389376  # Starting index for dataset items, can be adjusted if resuming from a previous run
+    manualStartIndex = 432501  # Starting index for dataset items, can be adjusted if resuming from a previous run
 
     debugViz = True
     
