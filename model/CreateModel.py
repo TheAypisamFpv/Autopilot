@@ -122,8 +122,8 @@ class SpatialAttentionDecoder(nn.Module):
 # Transformer decoder – **memory projection added**
 # -------------------------
 class TransformerDecoder(nn.Module):
-    def __init__(self, featDim=256, hiddenDim=256, predSteps=6,
-                 numLayers=2, numHeads=4):
+    def __init__(self, featDim=256, hiddenDim=256, predSteps=12,
+                 numLayers=1, numHeads=4):
         super().__init__()
         self.predSteps = predSteps
         self.hiddenDim = hiddenDim
@@ -241,7 +241,7 @@ if __name__ == "__main__":
     img1 = torch.randn(B, 3, 360, 640)
     img2 = torch.randn(B, 3, 360, 640)
 
-    model = TrajectoryModel(featDim=512, hiddenDim=512, predSteps=12, useAuxDyn=True)
+    model = TrajectoryModel(featDim=256, hiddenDim=512, predSteps=12, useAuxDyn=True)
     model.eval()
 
     with torch.no_grad():
