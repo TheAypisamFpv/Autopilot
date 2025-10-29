@@ -7,8 +7,10 @@ import cv2
 from datetime import timedelta
 import math
 import time
+import json
 
 from model.CreateModel import TrajectoryModel
+import warnings
 from dataset.generator import (
     loadGpsData,
     findFutureGpsPoints,
@@ -212,8 +214,30 @@ def runModel(modelPath, videoPath, temporalContextTimeWindow=0.1):
     # --- Initialization ---
     device = torch.device("cuda" if USEGPU and torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
-    # Create model with default params, will override with specs
-    model = TrajectoryModel(featDim=512, hiddenDim=1024, predSteps=12).to(device)
+    # Load training params from JSON
+    paramsPath = modelPath.replace('best_model.pth', 'training_params.json')
+    if os.path.exists(paramsPath):
+        with open(paramsPath, 'r') as f:
+            trainingParams = json.load(f)
+        featDim = trainingParams.get('featDim', 512)
+        hiddenDim = trainingParams.get('hiddenDim', 1024)
+        predSteps = trainingParams.get('predSteps', 12)
+        
+        # check if the model name in the params matches what's in CreateModel.py
+        modelName = trainingParams.get('modelName', 'unknown_model')
+        availableModelName = TrajectoryModel(featDim=featDim, hiddenDim=hiddenDim, predSteps=predSteps).to(device).name
+        if modelName != availableModelName:
+            # raise an error for invalid architecture
+            raise ValueError(f"Invalid model architecture. Model with architecture '{modelName}' was being loaded with the architecture '{availableModelName}'.")
+
+        # If model name is valid, proceed with loading
+        print(f"Loaded training params from {paramsPath}: featDim={featDim}, hiddenDim={hiddenDim}, predSteps={predSteps}")
+    else:
+        print()
+        warnings.warn(f"{paramsPath} not found, using defaults (This may cause errors if model architecture mismatches.)\n")
+        featDim, hiddenDim, predSteps = 512, 1024, 12
+    
+    model = TrajectoryModel(featDim=featDim, hiddenDim=hiddenDim, predSteps=predSteps).to(device)
     model.load_state_dict(torch.load(modelPath, map_location=device))
     model.eval()
 
@@ -222,7 +246,7 @@ def runModel(modelPath, videoPath, temporalContextTimeWindow=0.1):
     interval = model.outputSpec.get('interval_seconds', 0.1) if hasattr(model, 'outputSpec') else 0.1
     inputImageSize = model.inputSpec.get('image_size', (360, 640)) if hasattr(model, 'inputSpec') else (360, 640)
 
-    print(f"Model specs - Input Size: {inputImageSize} -> Output PredSteps: {predSteps}, Interval: {interval}s")
+    print(f"\nModel specs - Input Size: {inputImageSize} -> Output PredSteps: {predSteps}, Interval: {interval}s\n")
 
     duration = (predSteps - 1) * interval
 
@@ -496,6 +520,6 @@ if __name__ == '__main__':
     USEGPU = False
     
     
-    modelPath = r"C:\Users\Aypisam\Documents\VS_Python_Project\Autopilot\training\run13\best_model.pth"
+    modelPath = r"C:\Users\Aypisam\Documents\VS_Python_Project\Autopilot\training\run14\best_model.pth"
     videoPath = r"C:\Users\Aypisam\Documents\VS_Python_Project\Autopilot\test_drive\2025.08.19\GP025986.MP4"
     runModel(modelPath, videoPath)
