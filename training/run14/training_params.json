@@ -1,0 +1,16 @@
+{
+    "datasetDir": "D:\\VS_Python_Project\\Autopilot\\Autopilot\\dataset\\output",
+    "numEpochs": 150,
+    "batchSize": 12,
+    "learningRate": 0.0001,
+    "trainValSplit": 0.8,
+    "patience": 15,
+    "datasetMaxSize": null,
+    "gradAccumSteps": 1,
+    "useAuxDyn": false,
+    "featDim": 256,
+    "hiddenDim": 512,
+    "predSteps": 6,
+    "deviceOverride": null,
+    "modelName": "TrajectoryFusionTransformer"
+}

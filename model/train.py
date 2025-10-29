@@ -490,7 +490,7 @@ if __name__ == "__main__":
     gradAccumSteps = 1        # Gradient accumulation steps (simulates larger effective batch if >1)
     learningRate = 1e-4       # Reduced from 3e-4 to prevent instability
     featDim = 256             # Feature dimension of encoder output (controls model width / capacity)
-    hiddenDim = 256             # Hidden size of the GRU decoder (affects model memory and temporal capacity)
+    hiddenDim = 256           # Hidden size of the GRU decoder (affects model memory and temporal capacity)
     predSteps = 12            # Number of waypoints (time steps) predicted for each sample
     useAuxDyn = False         # Whether to enable auxiliary dynamics head (speed/accel prediction)
     resumeModelPath = None    # Set to path like "training/run13/best_model.pth" to resume training
