@@ -3,7 +3,6 @@ import json
 from datetime import datetime, timedelta
 import numpy as np
 import math
-import argparse
 import os
 
 class NumpyEncoder(json.JSONEncoder):

@@ -93,11 +93,11 @@ def main(videoPath:str = None):
         yStart = centerY - cropSize // 2
         
         # Crop the frame to get the largest possible square
-        croppedFrame = frame[yStart:yStart + cropSize, xStart:xStart + cropSize]
+        # croppedFrame = frame[yStart:yStart + cropSize, xStart:xStart + cropSize]
         
-        # Resize the square to 640x640
-        resizedFrame = cv2.resize(croppedFrame, modelDimensions, interpolation=cv2.INTER_AREA)
-        resizedFrame = cv2.resize(resizedFrame, (cropSize//2, cropSize//2), interpolation=cv2.INTER_AREA)
+        # # Resize the square to 640x640
+        # resizedFrame = cv2.resize(croppedFrame, modelDimensions, interpolation=cv2.INTER_AREA)
+        resizedFrame = cv2.resize(frame, (frame.shape[1] // 2, frame.shape[0] // 2), interpolation=cv2.INTER_AREA)
         
 
         # Use the video's internal timestamp for more accurate synchronization
@@ -173,17 +173,19 @@ def main(videoPath:str = None):
         # Frame dimensions
         frameHeight, frameWidth, _ = resizedFrame.shape
         
+        tentacleFrameHeight = frameHeight*3
+        tentacleFrameWidth = frameWidth
         # Create a separate transparent frame for the tentacle/path
-        tentacleFrame = np.zeros((frameHeight, frameWidth, 4), dtype=np.uint8)  # RGBA
+        tentacleFrame = np.zeros((tentacleFrameHeight, tentacleFrameWidth, 4), dtype=np.uint8)  # RGBA
         
         # Vector origin (bottom center)
         vectorWidth = 10
-        originX = frameWidth // 2
-        originY = frameHeight - vectorWidth
+        originX = tentacleFrameWidth // 2
+        originY = tentacleFrameHeight - vectorWidth
         
-        # Number of future points to find (1 point -> 0.5 second into the future)
-        numPoints = 6  # 3 seconds into the future
-        secondsPerPoint = 0.5  # 0.5 second per point
+        # Number of future points to find (1 point -> 0.25 second into the future)
+        numPoints = 12  # 3 seconds into the future
+        secondsPerPoint = 3/numPoints
         
         # Scale factor for distance to pixels conversion
         scaleFactorPixelsPerMeter = 10
@@ -275,6 +277,7 @@ def main(videoPath:str = None):
                 # red = int(255 * normalizedSpeed)
                 alpha = 255  # Transparency level (0-255)
                 color = (251, 152, 52, alpha)  # BGRA format
+                color = (152, 152, 152, alpha)  # BGRA format
                 
                 # Draw the line on the transparent tentacle frame
                 cv2.line(tentacleFrame, points[i], points[i+1], color, vectorWidth, cv2.LINE_AA)
@@ -282,12 +285,12 @@ def main(videoPath:str = None):
         # Define perspective transform points for road warping effect
         # Source points - the tentacle as drawn in 2D space
 
-        verticalShift = -0.02 * frameHeight  # Shift the tentacle up by 2% of the frame height
+        verticalShift = -0.02 * tentacleFrameHeight  # Shift the tentacle up by 2% of the frame height
 
-        tentacleWidth = 0.05 * frameWidth
-        tentacleStartHeight = 1 * frameHeight
-        bottomMargin = 0.03289 * frameHeight
-        topMargin = 0.18 * frameHeight
+        tentacleWidth = 0.05 * tentacleFrameWidth
+        tentacleStartHeight = 1 * tentacleFrameHeight
+        bottomMargin = 0.0 * tentacleFrameHeight
+        topMargin = 0.18 * tentacleFrameHeight
 
         srcPts = np.float32([
             [frameWidth/2 - tentacleWidth, tentacleStartHeight - bottomMargin + verticalShift],   # Bottom left
@@ -301,12 +304,12 @@ def main(videoPath:str = None):
             cv2.circle(tentacleFrame, tuple(pt.astype(int)), 5, (255, 0, 0), -1)
 
 
-        topWidth = frameWidth * 0.10 # 15% of the frame width
-        topHeight = frameHeight * 0.7 # higher is lower on the screen
+        topWidth = frameWidth * 0.04 # 15% of the frame width
+        topHeight = frameHeight * 0.66 # higher is lower on the screen
 
         # margins
-        bottomHorizontalMargin = 0.075 * frameWidth  # 5% of the frame width
-        bottomVerticalMargin = 0.1315 * frameHeight  # 3% of the frame height
+        bottomHorizontalMargin = -0.15 * frameWidth  # 5% of the frame width
+        bottomVerticalMargin = -0.05 * frameHeight  # 3% of the frame height
 
         horizontalOffset = 0.01 * frameWidth  # 5% of the frame width
 
@@ -318,11 +321,13 @@ def main(videoPath:str = None):
             [frameWidth/2-topWidth + horizontalOffset, topHeight]  # Top left
         ])
 
-        cv2.imshow('Tentacle Path', tentacleFrame)
+        #/2
+        resizedTentacleFrame = cv2.resize(tentacleFrame, (tentacleFrameWidth//2, tentacleFrameHeight//2), interpolation=cv2.INTER_AREA)
+        cv2.imshow('Tentacle Path', resizedTentacleFrame)
         
         # draw the destination points on the resized frame for debugging
         for pt in dstPts:
-            cv2.circle(resizedFrame, tuple(pt.astype(int)), 5, (0, 255, 0), -1)
+            cv2.circle(resizedFrame, tuple(pt.astype(int)), 3, (0, 255, 0), -1)
         
         # Calculate the perspective transform matrix
         if perspMatrix is None:
@@ -362,5 +367,6 @@ def main(videoPath:str = None):
     cv2.destroyAllWindows()
 
 if __name__ == "__main__":
-    videoPath = r"F:\VS_Python_Project\Autopilot\Autopilot\Test_drive\2025.06.19\GP045961.MP4"
+    # videoPath = r"C:\Users\Aypisam\Documents\VS_Python_Project\Autopilot\test_drive\2025.08.19\GOPR5986_combined.MP4"
+    videoPath = r"C:\Users\Aypisam\Documents\VS_Python_Project\Autopilot\test_drive\2025.08.19\GP095986.MP4"
     main(videoPath)

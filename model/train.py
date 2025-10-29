@@ -160,6 +160,7 @@ def trainModel(
     featDim=256,
     hiddenDim=256,
     predSteps=6,
+    intervalSeconds=0.1,
     deviceOverride=None,
     resumeModelPath=None,
 ):
@@ -221,12 +222,10 @@ def trainModel(
             hiddenDim = loadedParams["hiddenDim"]
         if "predSteps" in loadedParams:
             predSteps = loadedParams["predSteps"]
+        if "intervalSeconds" in loadedParams:
+            intervalSeconds = loadedParams["intervalSeconds"]
         
         deviceOverride = loadedParams.get("deviceOverride", deviceOverride)
-        historyDf = pd.read_csv(historyPath)
-        history = historyDf.to_dict('list')
-        startEpoch = len(history["train_loss"])
-        runDir = resumeDir
     else:
         runDir = getRunDir()
         startEpoch = 0
@@ -241,7 +240,7 @@ def trainModel(
     scaler = GradScaler(device='cuda', enabled=useAmp)
 
     model = TrajectoryModel(
-        featDim=featDim, hiddenDim=hiddenDim, predSteps=predSteps, useAuxDyn=useAuxDyn
+        featDim=featDim, hiddenDim=hiddenDim, predSteps=predSteps, useAuxDyn=useAuxDyn, intervalSeconds=intervalSeconds
     ).to(device)
 
     if resumeModelPath:
@@ -274,6 +273,7 @@ def trainModel(
         "featDim": featDim,
         "hiddenDim": hiddenDim,
         "predSteps": predSteps,
+        "intervalSeconds": intervalSeconds,
         "deviceOverride": deviceOverride,
         "modelName": modelName,
     }
@@ -483,6 +483,25 @@ def trainModel(
 
 if __name__ == "__main__":
     datasetPath = r"D:\VS_Python_Project\Autopilot\Autopilot\dataset\output"
+    # Parse dataset path to extract parameters
+    basename = os.path.basename(datasetPath)
+    if basename.startswith('output_'):
+        parts = basename.split('_')
+        if len(parts) == 3:
+            numVectors = int(parts[1])
+            vectorTimeWindow = float(parts[2])
+            intervalSeconds = vectorTimeWindow / numVectors
+            predSteps = numVectors
+            print(f"Parsed from dataset path: numVectors={numVectors}, vectorTimeWindow={vectorTimeWindow}, intervalSeconds={intervalSeconds}")
+        else:
+            print("Warning: Could not parse dataset path, using defaults")
+            predSteps = 12
+            intervalSeconds = 0.1
+    else:
+        print("Warning: Dataset path does not start with 'output_', using defaults")
+        predSteps = 12
+        intervalSeconds = 0.1
+    
     datasetMaxSize = None     # Maximum number of samples to load from the dataset (None = use all available)
     numEpochs = 150           # Total number of training epochs (full passes through the dataset)
     patience = 15             # Early stopping patience (stop if no val improvement for this many epochs)
@@ -491,7 +510,6 @@ if __name__ == "__main__":
     learningRate = 1e-4       # Reduced from 3e-4 to prevent instability
     featDim = 256             # Feature dimension of encoder output (controls model width / capacity)
     hiddenDim = 256           # Hidden size of the GRU decoder (affects model memory and temporal capacity)
-    predSteps = 12            # Number of waypoints (time steps) predicted for each sample
     useAuxDyn = False         # Whether to enable auxiliary dynamics head (speed/accel prediction)
     resumeModelPath = None    # Set to path like "training/run13/best_model.pth" to resume training
 
@@ -508,5 +526,6 @@ if __name__ == "__main__":
         featDim=featDim,
         hiddenDim=hiddenDim,
         predSteps=predSteps,
+        intervalSeconds=intervalSeconds,
         resumeModelPath=resumeModelPath,
     )

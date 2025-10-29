@@ -197,7 +197,7 @@ class TransformerDecoder(nn.Module):
 # Full model
 # -------------------------
 class TrajectoryModel(nn.Module):
-    def __init__(self, featDim=256, hiddenDim=256, predSteps=12, useAuxDyn=False):
+    def __init__(self, featDim=256, hiddenDim=256, predSteps=12, useAuxDyn=False, intervalSeconds=0.1):
         super().__init__()
         self.encoder = EarlyFusionEncoder(featDim=featDim)
         self.decoder = TransformerDecoder(
@@ -221,7 +221,7 @@ class TrajectoryModel(nn.Module):
         }
         self.outputSpec = {
             'num_vectors': predSteps,  # Number of predicted trajectory vectors
-            'interval_seconds': 0.1  # Time interval between each predicted vector
+            'intervalSeconds': intervalSeconds  # Time interval between each predicted vector
         }
 
     def forward(self, imgT, imgTm1, gtTraj=None, teacherForcing=False, tfRatio=0.9):

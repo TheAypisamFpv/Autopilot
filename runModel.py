@@ -66,8 +66,10 @@ def visualizePredictions(frame, predictions, groundTruth, attnMap=None, warpingM
             endYGt = int(currentPointGt[1] - point[1] * vecToPixel)
             cv2.line(trajectoryFrame, currentPointGt, (endXGt, endYGt), (*gray, 255), int(vectorThickness*1.5), cv2.LINE_AA)
             currentPointGt = (endXGt, endYGt)
-            
+        
             # cv2.line(trajectoryFrame, currentPointGt, (currentPointGt[0]+200, currentPointGt[1]), (0, 0, 0), 2, cv2.LINE_AA)
+    else:
+        print("Warning: No ground truth trajectory available for visualization.")
 
     # Draw predicted trajectory (blue)
     if predictions is not None:
@@ -222,6 +224,7 @@ def runModel(modelPath, videoPath, temporalContextTimeWindow=0.1):
         featDim = trainingParams.get('featDim', 512)
         hiddenDim = trainingParams.get('hiddenDim', 1024)
         predSteps = trainingParams.get('predSteps', 12)
+        intervalSeconds = trainingParams.get('intervalSeconds', 0.1)
         
         # check if the model name in the params matches what's in CreateModel.py
         modelName = trainingParams.get('modelName', 'unknown_model')
@@ -231,24 +234,24 @@ def runModel(modelPath, videoPath, temporalContextTimeWindow=0.1):
             raise ValueError(f"Invalid model architecture. Model with architecture '{modelName}' was being loaded with the architecture '{availableModelName}'.")
 
         # If model name is valid, proceed with loading
-        print(f"Loaded training params from {paramsPath}: featDim={featDim}, hiddenDim={hiddenDim}, predSteps={predSteps}")
+        print(f"Loaded training params from {paramsPath}: featDim={featDim}, hiddenDim={hiddenDim}, predSteps={predSteps}, intervalSeconds={intervalSeconds}")
     else:
         print()
         warnings.warn(f"{paramsPath} not found, using defaults (This may cause errors if model architecture mismatches.)\n")
         featDim, hiddenDim, predSteps = 512, 1024, 12
     
-    model = TrajectoryModel(featDim=featDim, hiddenDim=hiddenDim, predSteps=predSteps).to(device)
+    model = TrajectoryModel(featDim=featDim, hiddenDim=hiddenDim, predSteps=predSteps, intervalSeconds=intervalSeconds).to(device)
     model.load_state_dict(torch.load(modelPath, map_location=device))
     model.eval()
 
     # Get specs from model or use defaults
     predSteps = model.outputSpec.get('num_vectors', 12) if hasattr(model, 'outputSpec') else 12
-    interval = model.outputSpec.get('interval_seconds', 0.1) if hasattr(model, 'outputSpec') else 0.1
+    interval = model.outputSpec.get('intervalSeconds', 0.1) if hasattr(model, 'outputSpec') else intervalSeconds
     inputImageSize = model.inputSpec.get('image_size', (360, 640)) if hasattr(model, 'inputSpec') else (360, 640)
 
     print(f"\nModel specs - Input Size: {inputImageSize} -> Output PredSteps: {predSteps}, Interval: {interval}s\n")
 
-    duration = (predSteps - 1) * interval
+    duration = predSteps * interval
 
     transformVisual = transforms.Compose([
         transforms.Resize(inputImageSize)
@@ -520,6 +523,6 @@ if __name__ == '__main__':
     USEGPU = False
     
     
-    modelPath = r"C:\Users\Aypisam\Documents\VS_Python_Project\Autopilot\training\run14\best_model.pth"
-    videoPath = r"C:\Users\Aypisam\Documents\VS_Python_Project\Autopilot\test_drive\2025.08.19\GP025986.MP4"
+    modelPath = r"C:\Users\Aypisam\Documents\VS_Python_Project\Autopilot\training\run15\best_model.pth"
+    videoPath = r"C:\Users\Aypisam\Documents\VS_Python_Project\Autopilot\test_drive\2025.08.19\GP095986.MP4"
     runModel(modelPath, videoPath)

@@ -675,6 +675,7 @@ def main(Path: str, outputDir: str, frameInterval: int, vectorsNumbers: int, vec
     - manualStartIndex (int, optional): Starting index for dataset items, can be adjusted if resuming from a previous run.
     - DEBUGVIZ (bool, optional): Flag to enable debug visualization.
     """
+    outputDir = os.path.join(outputDir, f"output_{vectorsNumbers}_{vectorTimeWindow}")
     startIndex = manualStartIndex if manualStartIndex is not False else 0
     # check if the provided path is a video file or a directory
     if os.path.isfile(Path):
@@ -695,7 +696,7 @@ def main(Path: str, outputDir: str, frameInterval: int, vectorsNumbers: int, vec
 
 if __name__ == "__main__":
     videoPath = r"C:\Users\Aypisam\Documents\VS_Python_Project\Autopilot\test_drive\2025.08.25"
-    outputDir = r"C:\Users\Aypisam\Documents\VS_Python_Project\Autopilot\dataset\output"
+    outputDir = r"C:\Users\Aypisam\Documents\VS_Python_Project\Autopilot\dataset"
     frameInterval = 0 # interval between each frame sample, in seconds
     vectorsNumbers = 12
     vectorTimeWindow = 3.0 # seconds
