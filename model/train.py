@@ -7,6 +7,7 @@ and evaluation with ADE/FDE metrics.
 import os
 import time
 import math
+from datetime import datetime
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -194,6 +195,7 @@ def trainModel(
     scaler = GradScaler(device='cuda', enabled=useAmp)
 
     transform = transforms.Compose([
+        transforms.Resize((360, 640)),  # Higher resolution
         transforms.ColorJitter(brightness=0.15, contrast=0.15, saturation=0.05, hue=0.02),
         transforms.RandomApply([transforms.GaussianBlur(kernel_size=(3, 3), sigma=(0.1, 1.0))], p=0.15),
         transforms.RandomAffine(degrees=2.5, translate=(0.02, 0.02), scale=(0.98, 1.02)),
@@ -212,7 +214,7 @@ def trainModel(
     valLoader = DataLoader(valDataset, batch_size=batchSize, shuffle=False, num_workers=numWorkers, pin_memory=True)
 
     model = TrajectoryModel(
-        feat_dim=featDim, hidden_dim=hiddenDim, pred_steps=predSteps, use_aux_dyn=useAuxDyn
+        featDim=featDim, hiddenDim=hiddenDim, predSteps=predSteps, useAuxDyn=useAuxDyn
     ).to(device)
 
 
@@ -286,7 +288,7 @@ def trainModel(
             batchSize = labels.size(0)
 
             with autocast(device_type='cuda', enabled=useAmp):
-                preds, auxOut, _ = model(currentImg, prevImg, gt_traj=labels, teacher_forcing=True, tf_ratio=tfRatio)
+                preds, auxOut, _ = model(currentImg, prevImg, gtTraj=labels, teacherForcing=True, tfRatio=tfRatio)
                 
                 # Check for NaN in predictions
                 if torch.isnan(preds).any():
@@ -329,7 +331,8 @@ def trainModel(
             batchesDone = i + 1
             timePerBatch = epochElapsed / max(1, batchesDone)
             eta = (len(trainLoader) - batchesDone) * timePerBatch
-            etaTime = time.strftime("%H:%M:%S", time.localtime(time.time() + eta))
+            etaFinish = datetime.fromtimestamp(time.time() + eta)
+            etaTime = etaFinish.strftime("%Y-%m-%d %H:%M:%S")
             totalElapsed = time.time() - trainingStartTime
             h, rem = divmod(int(totalElapsed), 3600)
             m, s = divmod(rem, 60)
@@ -351,11 +354,12 @@ def trainModel(
 
         print('\n\nValidation Progress:')
 
+        valStartTime = time.time()
         with torch.no_grad():
             for i, (prevImg, currentImg, dynamicData, labels) in enumerate(valLoader):
                 prevImg, currentImg, labels = prevImg.to(device), currentImg.to(device), labels.to(device)
                 with autocast(device_type='cuda', enabled=useAmp):
-                    preds, _, _ = model(currentImg, prevImg, teacher_forcing=False, tf_ratio=0.0)
+                    preds, _, _ = model(currentImg, prevImg, teacherForcing=False, tfRatio=0.0)
                     
                     # Check for NaN in validation predictions
                     if torch.isnan(preds).any():
@@ -368,8 +372,16 @@ def trainModel(
                 valADE += ade * labels.size(0)
                 valFDE += fde * labels.size(0)
                 completion = (i + 1) / len(valLoader)
+                
+                batchesDone = i + 1
+                valElapsed = time.time() - valStartTime
+                valTimePerBatch = valElapsed / max(1, batchesDone)
+                valEta = (len(valLoader) - batchesDone) * valTimePerBatch
+                valEtaFinish = datetime.fromtimestamp(time.time() + valEta)
+                valEtaTime = valEtaFinish.strftime("%Y-%m-%d %H:%M:%S")
                 print(f"{getProgressBar(completion, wheelIndex=i, maxbarLength=75)}"
-                      f"Avg Val Loss: {valLoss/((i+1)*labels.size(0)):.4f} (best: {bestValLoss:.4f})", end="\r")
+                    f"Avg Val Loss: {valLoss/((i+1)*labels.size(0)):.4f} (best: {bestValLoss:.4f})"
+                    f" - ETA: {valEtaTime}", end="\r")
 
         valLoss /= len(valLoader.dataset)
         valADE /= len(valLoader.dataset)
@@ -408,11 +420,11 @@ if __name__ == "__main__":
     datasetMaxSize = None   # Maximum number of samples to load from the dataset (None = use all available)
     numEpochs = 150           # Total number of training epochs (full passes through the dataset)
     patience = 15             # Early stopping patience (stop if no val improvement for this many epochs)
-    batchSize = 48            # Number of samples per training batch (controls GPU memory usage)
+    batchSize = 12            # Number of samples per training batch (controls GPU memory usage)
     gradAccumSteps = 1        # Gradient accumulation steps (simulates larger effective batch if >1)
     learningRate = 1e-4       # Reduced from 3e-4 to prevent instability
-    featDim = 512             # Feature dimension of encoder output (controls model width / capacity)
-    hiddenDim = 1024           # Hidden size of the GRU decoder (affects model memory and temporal capacity)
+    featDim = 256             # Feature dimension of encoder output (controls model width / capacity)
+    hiddenDim = 512           # Hidden size of the GRU decoder (affects model memory and temporal capacity)
     predSteps = 6             # Number of waypoints (time steps) predicted for each sample
     useAuxDyn = False         # Whether to enable auxiliary dynamics head (speed/accel prediction)
 
