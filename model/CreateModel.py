@@ -197,7 +197,7 @@ class TransformerDecoder(nn.Module):
 # Full model
 # -------------------------
 class TrajectoryModel(nn.Module):
-    def __init__(self, featDim=256, hiddenDim=256, predSteps=6, useAuxDyn=False):
+    def __init__(self, featDim=256, hiddenDim=256, predSteps=12, useAuxDyn=False):
         super().__init__()
         self.encoder = EarlyFusionEncoder(featDim=featDim)
         self.decoder = TransformerDecoder(
@@ -212,7 +212,17 @@ class TrajectoryModel(nn.Module):
                 nn.ReLU(),
                 nn.Linear(128, 4)
             )
-        self.name = "TrajectoryFusionTransformer"
+        self.name = "TrajectoryFusionTransformer_TFTV1"
+
+        # Input and output technicality specifications
+        self.inputSpec = {
+            'image_size': (360, 640),  # (height, width)
+            'temporal_delay_seconds': 0.1  # Time delay between previous and current images
+        }
+        self.outputSpec = {
+            'num_vectors': predSteps,  # Number of predicted trajectory vectors
+            'interval_seconds': 0.1  # Time interval between each predicted vector
+        }
 
     def forward(self, imgT, imgTm1, gtTraj=None, teacherForcing=False, tfRatio=0.9):
         fmap = self.encoder(imgT, imgTm1)
@@ -231,7 +241,7 @@ if __name__ == "__main__":
     img1 = torch.randn(B, 3, 360, 640)
     img2 = torch.randn(B, 3, 360, 640)
 
-    model = TrajectoryModel(featDim=512, hiddenDim=1024, predSteps=6, useAuxDyn=True)
+    model = TrajectoryModel(featDim=512, hiddenDim=512, predSteps=12, useAuxDyn=True)
     model.eval()
 
     with torch.no_grad():
@@ -240,6 +250,9 @@ if __name__ == "__main__":
     print("preds:", preds.shape)
     if aux is not None:
         print("aux:", aux.shape)
+        
+    print("Input spec:", model.inputSpec)
+    print("Output spec:", model.outputSpec)
 
     total = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print("Trainable params:", total)

@@ -22,7 +22,6 @@ from dataset.generator import (
 
 blue = (251, 152, 52) #RGB 52, 152, 251
 gray = (128, 128, 128)
-interval = 3.0 / 12.0
 
 trajectoryCanvasWidth = 1000//2
 trajectoryCanvasHeight = 1500//2
@@ -40,7 +39,7 @@ def putTextWithOutline(frame, text, org, fontFace, fontScale, color, thickness=1
     cv2.putText(frame, text, org, fontFace, fontScale, color, thickness, cv2.LINE_AA)
 
 
-def visualizePredictions(frame, predictions, groundTruth, attnMap=None, warpingMatrixHalf=None, dstPoints=None, currentGpsPoint=None, gpsIsValid=True):
+def visualizePredictions(frame, predictions, groundTruth, attnMap=None, warpingMatrixHalf=None, dstPoints=None, currentGpsPoint=None, gpsIsValid=True, interval=0.1):
     # Resize frame to half resolution for faster processing
     scaledFrame = cv2.resize(frame, (frame.shape[1] // DOWNSCALE, frame.shape[0] // DOWNSCALE))
 
@@ -213,18 +212,28 @@ def runModel(modelPath, videoPath, temporalContextTimeWindow=0.1):
     # --- Initialization ---
     device = torch.device("cuda" if USEGPU and torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
-    model = TrajectoryModel(feat_dim=512, hidden_dim=1024, pred_steps=12).to(device)
+    # Create model with default params, will override with specs
+    model = TrajectoryModel(featDim=512, hiddenDim=1024, predSteps=12).to(device)
     model.load_state_dict(torch.load(modelPath, map_location=device))
     model.eval()
 
+    # Get specs from model or use defaults
+    predSteps = model.outputSpec.get('num_vectors', 12) if hasattr(model, 'outputSpec') else 12
+    interval = model.outputSpec.get('interval_seconds', 0.1) if hasattr(model, 'outputSpec') else 0.1
+    inputImageSize = model.inputSpec.get('image_size', (360, 640)) if hasattr(model, 'inputSpec') else (360, 640)
+
+    print(f"Model specs - Input Size: {inputImageSize} -> Output PredSteps: {predSteps}, Interval: {interval}s")
+
+    duration = (predSteps - 1) * interval
+
     transformVisual = transforms.Compose([
-        transforms.Resize((270, 480))
+        transforms.Resize(inputImageSize)
     ])
 
     transform = transforms.Compose([
-        transforms.Resize((270, 480)),
+        transforms.Resize(inputImageSize),
         transforms.ToTensor(),
-        transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
+        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
     ])
 
     # --- File and Data Loading ---
@@ -412,18 +421,18 @@ def runModel(modelPath, videoPath, temporalContextTimeWindow=0.1):
                 debugTimeStart = time.time()
                 labels = None
                 if gpsIsValid and currentGpsPoint:
-                    futureTrajectory = calculateFutureTrajectory(gpsData, currentGpsPoint, currentFrameTime, duration=3.0, interval=interval)
+                    futureTrajectory = calculateFutureTrajectory(gpsData, currentGpsPoint, currentFrameTime, duration=duration, interval=interval)
                     validVectors = [v for v in futureTrajectory if v is not None]
-                    if len(validVectors) >= 12:
+                    if len(validVectors) >= predSteps:
                         labelsList = [[v['x'], v['y']] for v in validVectors]
-                        labels = torch.tensor(labelsList[:12], dtype=torch.float32)
+                        labels = torch.tensor(labelsList[:predSteps], dtype=torch.float32)
                 groundTruthCalcTime = time.time() - debugTimeStart
 
 
                 # --- Visualization ---
                 debugTimeStart = time.time()
                 attnMap = lastAttnMap
-                visualizePredictions(visualizeFrame, prediction.squeeze() if prediction is not None else None, labels, attnMap, warpingMatrixHalf, dstPoints, currentGpsPoint, gpsIsValid)
+                visualizePredictions(visualizeFrame, prediction.squeeze() if prediction is not None else None, labels, attnMap, warpingMatrixHalf, dstPoints, currentGpsPoint, gpsIsValid, interval)
                 visualizationTime = time.time() - debugTimeStart
 
                 waitTime = 1

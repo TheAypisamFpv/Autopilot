@@ -30,13 +30,14 @@ class DrivingDataset(Dataset):
     Loads paired images (previous and current) and trajectory vectors.
     """
 
-    def __init__(self, datasetDir, transform=None, maxSize=None, dtype=torch.float32):
+    def __init__(self, datasetDir, transform=None, maxSize=None, predSteps=6, dtype=torch.float32):
         self.datasetDir = datasetDir
         self.labelsDir = os.path.join(datasetDir, "labels")
         self.imagesDir = os.path.join(datasetDir, "images")
         self.transform = transform
         self.samples = [f.split(".")[0] for f in os.listdir(self.labelsDir) if f.endswith(".txt")]
         self.maxSize = maxSize
+        self.predSteps = predSteps
         self.dtype = dtype
 
     def __len__(self):
@@ -62,12 +63,12 @@ class DrivingDataset(Dataset):
 
         vectorsLine = lines[0].strip().split(" : ")[1]
         if vectorsLine == "None":
-            vectors = np.zeros((12, 2), dtype=np.float32)
+            vectors = np.zeros((self.predSteps, 2), dtype=np.float32)
         else:
             vectorsList = [list(map(float, v.split(","))) for v in vectorsLine.split(" ")]
-            while len(vectorsList) < 6:
+            while len(vectorsList) < self.predSteps:
                 vectorsList.append([0.0, 0.0])
-            vectors = np.array(vectorsList[:6], dtype=np.float32)
+            vectors = np.array(vectorsList[:self.predSteps], dtype=np.float32)
 
         speed = float(lines[1].strip().split(" : ")[1])
         dynamicData = torch.tensor([speed], dtype=self.dtype)
@@ -160,6 +161,7 @@ def trainModel(
     hiddenDim=256,
     predSteps=6,
     deviceOverride=None,
+    resumeModelPath=None,
 ):
     """
     Main training function for TrajectoryModel.
@@ -180,12 +182,56 @@ def trainModel(
         hiddenDim (int): Hidden dimension for model.
         predSteps (int): Number of prediction steps.
         deviceOverride (str or None): Device to use ('cpu' or 'cuda'), or None for auto-detect.
+        resumeModelPath (str or None): Path to a previously trained model to resume training from.
     """
     
     if not os.path.exists(datasetDir):
         raise FileNotFoundError(f"Dataset directory '{datasetDir}' does not exist.")
 
-    runDir = getRunDir()
+    if resumeModelPath:
+        resumeDir = os.path.dirname(resumeModelPath)
+        paramsPath = os.path.join(resumeDir, "training_params.json")
+        historyPath = os.path.join(resumeDir, "training_history.csv")
+        if not os.path.exists(paramsPath) or not os.path.exists(historyPath):
+            raise FileNotFoundError(f"Cannot resume: missing training_params.json or training_history.csv in {resumeDir}")
+        with open(paramsPath, "r") as f:
+            loadedParams = json.load(f)
+        # Set parameters from loaded, keeping passed values if missing
+        if "datasetDir" in loadedParams:
+            datasetDir = loadedParams["datasetDir"]
+        if "numEpochs" in loadedParams:
+            numEpochs = loadedParams["numEpochs"]
+        if "batchSize" in loadedParams:
+            batchSize = loadedParams["batchSize"]
+        if "learningRate" in loadedParams:
+            learningRate = loadedParams["learningRate"]
+        if "trainValSplit" in loadedParams:
+            trainValSplit = loadedParams["trainValSplit"]
+        if "patience" in loadedParams:
+            patience = loadedParams["patience"]
+        if "datasetMaxSize" in loadedParams:
+            datasetMaxSize = loadedParams["datasetMaxSize"]
+        if "gradAccumSteps" in loadedParams:
+            gradAccumSteps = loadedParams["gradAccumSteps"]
+        if "useAuxDyn" in loadedParams:
+            useAuxDyn = loadedParams["useAuxDyn"]
+        if "featDim" in loadedParams:
+            featDim = loadedParams["featDim"]
+        if "hiddenDim" in loadedParams:
+            hiddenDim = loadedParams["hiddenDim"]
+        if "predSteps" in loadedParams:
+            predSteps = loadedParams["predSteps"]
+        
+        deviceOverride = loadedParams.get("deviceOverride", deviceOverride)
+        historyDf = pd.read_csv(historyPath)
+        history = historyDf.to_dict('list')
+        startEpoch = len(history["train_loss"])
+        runDir = resumeDir
+    else:
+        runDir = getRunDir()
+        startEpoch = 0
+        history = {"train_loss": [], "val_loss": [], "train_ADE": [], "val_ADE": [], "train_FDE": [], "val_FDE": []}
+
     device = (
         torch.device(deviceOverride)
         if deviceOverride
@@ -194,34 +240,25 @@ def trainModel(
     useAmp = device.type == "cuda"
     scaler = GradScaler(device='cuda', enabled=useAmp)
 
-    transform = transforms.Compose([
-        transforms.Resize((360, 640)),  # Higher resolution
-        transforms.ColorJitter(brightness=0.15, contrast=0.15, saturation=0.05, hue=0.02),
-        transforms.RandomApply([transforms.GaussianBlur(kernel_size=(3, 3), sigma=(0.1, 1.0))], p=0.15),
-        transforms.RandomAffine(degrees=2.5, translate=(0.02, 0.02), scale=(0.98, 1.02)),
-        transforms.ToTensor(),
-        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-    ])
-
-    dataset = DrivingDataset(datasetDir, transform=transform, maxSize=datasetMaxSize)
-    totalSamples = len(dataset)
-    trainSize = int(trainValSplit * totalSamples)
-    valSize = totalSamples - trainSize
-    trainDataset, valDataset = random_split(dataset, [trainSize, valSize])
-
-    numWorkers = 2
-    trainLoader = DataLoader(trainDataset, batch_size=batchSize, shuffle=True, num_workers=numWorkers, pin_memory=True)
-    valLoader = DataLoader(valDataset, batch_size=batchSize, shuffle=False, num_workers=numWorkers, pin_memory=True)
-
     model = TrajectoryModel(
         featDim=featDim, hiddenDim=hiddenDim, predSteps=predSteps, useAuxDyn=useAuxDyn
     ).to(device)
 
+    if resumeModelPath:
+        model.load_state_dict(torch.load(resumeModelPath))
+
+    # Use model's output spec to determine prediction steps if available
+    if hasattr(model, 'outputSpec') and 'num_vectors' in model.outputSpec:
+        predSteps = model.outputSpec['num_vectors']
 
     try:
         modelName = model.name
     except AttributeError:
         modelName = "I Guess We'll Never Know"
+
+    # Use model's output spec to determine prediction steps if available
+    if hasattr(model, 'outputSpec') and 'num_vectors' in model.outputSpec:
+        predSteps = model.outputSpec['num_vectors']
     
     # Export training parameters to JSON
     params = {
@@ -240,8 +277,37 @@ def trainModel(
         "deviceOverride": deviceOverride,
         "modelName": modelName,
     }
+    if resumeModelPath:
+        loadedParams["modelName"] = modelName
+        params = loadedParams
+    
     with open(os.path.join(runDir, "training_params.json"), "w") as f:
         json.dump(params, f, indent=4)
+
+    # Determine input image size from model spec or default
+    inputImageSize = (360, 640)  # Default fallback
+    if hasattr(model, 'inputSpec') and 'image_size' in model.inputSpec:
+        inputImageSize = model.inputSpec['image_size']
+
+    transform = transforms.Compose([
+        transforms.Resize(inputImageSize),  # Use model's expected input image size or default
+        transforms.ColorJitter(brightness=0.15, contrast=0.15, saturation=0.05, hue=0.02),
+        transforms.RandomApply([transforms.GaussianBlur(kernel_size=(3, 3), sigma=(0.1, 1.0))], p=0.15),
+        transforms.RandomAffine(degrees=2.5, translate=(0.02, 0.02), scale=(0.98, 1.02)),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+    ])
+
+    dataset = DrivingDataset(datasetDir, transform=transform, maxSize=datasetMaxSize, predSteps=predSteps)
+    totalSamples = len(dataset)
+    trainSize = int(trainValSplit * totalSamples)
+    valSize = totalSamples - trainSize
+    trainDataset, valDataset = random_split(dataset, [trainSize, valSize])
+
+    numWorkers = 2
+    trainLoader = DataLoader(trainDataset, batch_size=batchSize, shuffle=True, num_workers=numWorkers, pin_memory=True)
+    valLoader = DataLoader(valDataset, batch_size=batchSize, shuffle=False, num_workers=numWorkers, pin_memory=True)
+
     optimizer = optim.AdamW(model.parameters(), lr=learningRate, weight_decay=1e-4, eps=1e-8)
 
     totalSteps = math.ceil((len(trainLoader) * numEpochs) / max(1, gradAccumSteps))
@@ -255,19 +321,19 @@ def trainModel(
 
     scheduler = optim.lr_scheduler.LambdaLR(optimizer, lrLambda)
 
-    perStepWeights = torch.tensor([1.6, 1.3, 1.0, 0.8, 0.6, 0.5], dtype=torch.float32)
+    # Generate per-step weights based on number of prediction steps
+    perStepWeights = torch.exp(torch.linspace(math.log(1.6), math.log(0.025), predSteps, dtype=torch.float32))
     auxDynWeight = 0.02
     teacherForcingStart = 0.9
     teacherForcingEnd = 0.0
     tfDecayEpochs = min(30, max(5, int(0.2 * numEpochs)))
 
-    history = {"train_loss": [], "val_loss": [], "train_ADE": [], "val_ADE": [], "train_FDE": [], "val_FDE": []}
-    bestValLoss = float("inf")
+    bestValLoss = min(history["val_loss"]) if history["val_loss"] else float("inf")
     epochsNoImprove = 0
     trainingStartTime = time.time()
     globalStep = 0
 
-    for epoch in range(numEpochs):
+    for epoch in range(startEpoch, numEpochs):
         model.train()
         runningLoss, runningADE, runningFDE = 0.0, 0.0, 0.0
         epochStartTime = time.time()
@@ -417,7 +483,7 @@ def trainModel(
 
 if __name__ == "__main__":
     datasetPath = r"D:\VS_Python_Project\Autopilot\Autopilot\dataset\output"
-    datasetMaxSize = None   # Maximum number of samples to load from the dataset (None = use all available)
+    datasetMaxSize = None     # Maximum number of samples to load from the dataset (None = use all available)
     numEpochs = 150           # Total number of training epochs (full passes through the dataset)
     patience = 15             # Early stopping patience (stop if no val improvement for this many epochs)
     batchSize = 12            # Number of samples per training batch (controls GPU memory usage)
@@ -425,9 +491,9 @@ if __name__ == "__main__":
     learningRate = 1e-4       # Reduced from 3e-4 to prevent instability
     featDim = 256             # Feature dimension of encoder output (controls model width / capacity)
     hiddenDim = 512           # Hidden size of the GRU decoder (affects model memory and temporal capacity)
-    predSteps = 6             # Number of waypoints (time steps) predicted for each sample
+    predSteps = 12            # Number of waypoints (time steps) predicted for each sample
     useAuxDyn = False         # Whether to enable auxiliary dynamics head (speed/accel prediction)
-
+    resumeModelPath = None    # Set to path like "training/run13/best_model.pth" to resume training
 
     trainModel(
         datasetDir=datasetPath,
@@ -442,4 +508,5 @@ if __name__ == "__main__":
         featDim=featDim,
         hiddenDim=hiddenDim,
         predSteps=predSteps,
+        resumeModelPath=resumeModelPath,
     )
