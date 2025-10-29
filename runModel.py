@@ -17,8 +17,20 @@ from dataset.generator import (
     calculateFutureTrajectory,
 )
 
+
+
+
 blue = (251, 152, 52) #RGB 52, 152, 251
 gray = (128, 128, 128)
+interval = 3.0 / 12.0
+
+trajectoryCanvasWidth = 1000//2
+trajectoryCanvasHeight = 1500//2
+vecToPixel = 20//2 # pixels per meter
+vectorThickness = 20//2
+
+global DOWNSCALE, SHOWATTENTION, SHOWORIGINALTRAJ, USEGPU
+
 
 def putTextWithOutline(frame, text, org, fontFace, fontScale, color, thickness=1):
     """Draws text with a black outline."""
@@ -27,12 +39,13 @@ def putTextWithOutline(frame, text, org, fontFace, fontScale, color, thickness=1
     # Draw the main text in the specified color
     cv2.putText(frame, text, org, fontFace, fontScale, color, thickness, cv2.LINE_AA)
 
-def visualizePredictions(frame, predictions, groundTruth, attnMap=None, warpingMatrix=None, dstPoints=None):
-    trajectoryCanvasWidth = 1000
-    trajectoryCanvasHeight = 1500
+
+def visualizePredictions(frame, predictions, groundTruth, attnMap=None, warpingMatrixHalf=None, dstPoints=None, currentGpsPoint=None, gpsIsValid=True):
+    # Resize frame to half resolution for faster processing
+    scaledFrame = cv2.resize(frame, (frame.shape[1] // DOWNSCALE, frame.shape[0] // DOWNSCALE))
+
+
     trajectoryFrame = np.zeros((trajectoryCanvasHeight, trajectoryCanvasWidth, 4), dtype=np.uint8)  # BGRA
-    vecToPixel = 20 # pixels per meter
-    vectorThickness = 40
     originPoint = (trajectoryCanvasWidth // 2, trajectoryCanvasHeight - vectorThickness)
     
     # Parameters for perspective warp using angles
@@ -50,7 +63,7 @@ def visualizePredictions(frame, predictions, groundTruth, attnMap=None, warpingM
         for point in groundTruth:
             endXGt = int(currentPointGt[0] + point[0] * vecToPixel)
             endYGt = int(currentPointGt[1] - point[1] * vecToPixel)
-            cv2.line(trajectoryFrame, currentPointGt, (endXGt, endYGt), (*gray, 255), vectorThickness, cv2.LINE_AA)
+            cv2.line(trajectoryFrame, currentPointGt, (endXGt, endYGt), (*gray, 255), int(vectorThickness*1.5), cv2.LINE_AA)
             currentPointGt = (endXGt, endYGt)
             
             # cv2.line(trajectoryFrame, currentPointGt, (currentPointGt[0]+200, currentPointGt[1]), (0, 0, 0), 2, cv2.LINE_AA)
@@ -71,47 +84,12 @@ def visualizePredictions(frame, predictions, groundTruth, attnMap=None, warpingM
     # Apply 3D warping
     srcPoints = np.array([(0, 0), (trajectoryCanvasWidth - 1, 0), (trajectoryCanvasWidth - 1, trajectoryCanvasHeight - 1), (0, trajectoryCanvasHeight - 1)], dtype=np.float32)
     
-    if warpingMatrix is not None:
-        M = warpingMatrix
-        if dstPoints is None:
-            # Fallback: compute dstPoints if not provided
-            centerX = frame.shape[1] // 2
-            centerY = frame.shape[0] // 2
-            f = 1000
-            cx = centerX
-            cy = centerY
-            w = 50 * 1.0  # scale=1.0
-            h = 75 * 1.0
-            d = 39  # translationZ
-            theta = -math.radians(102)  # trajAngle
-            R = np.array([
-                [1, 0, 0],
-                [0, math.cos(theta), -math.sin(theta)],
-                [0, math.sin(theta), math.cos(theta)]
-            ])
-            center_world = np.array([0, 11, d])  # translationY
-            corners_local = [
-                (-w/2, h/2, 0),
-                (w/2, h/2, 0),
-                (w/2, -h/2, 0),
-                (-w/2, -h/2, 0)
-            ]
-            dstPointsComputed = []
-            for local in corners_local:
-                world = R @ np.array(local) + center_world
-                if world[2] > 0:
-                    u = f * world[0] / world[2] + cx
-                    v = f * world[1] / world[2] + cy
-                    dstPointsComputed.append((u, v))
-                else:
-                    dstPointsComputed.append((cx, cy))
-            dstPointsComputed = np.array(dstPointsComputed, dtype=np.float32)
-            dstPointsComputed = dstPointsComputed[::-1]
-            dstPoints = dstPointsComputed
+    if warpingMatrixHalf is not None:
+        M = warpingMatrixHalf
     else:
-        # Original computation (for backward compatibility)
-        centerX = frame.shape[1] // 2
-        centerY = frame.shape[0] // 2
+        # Fallback: compute for half resolution
+        centerX = scaledFrame.shape[1] // 2
+        centerY = scaledFrame.shape[0] // 2
         f = 1000
         cx = centerX
         cy = centerY
@@ -131,64 +109,109 @@ def visualizePredictions(frame, predictions, groundTruth, attnMap=None, warpingM
             (w/2, -h/2, 0),
             (-w/2, -h/2, 0)
         ]
-        dstPoints = []
+        dstPointsComputed = []
         for local in corners_local:
             world = R @ np.array(local) + center_world
             if world[2] > 0:
                 u = f * world[0] / world[2] + cx
                 v = f * world[1] / world[2] + cy
-                dstPoints.append((u, v))
+                dstPointsComputed.append((u, v))
             else:
-                dstPoints.append((cx, cy))
-        dstPoints = np.array(dstPoints, dtype=np.float32)
-        dstPoints = dstPoints[::-1]
-        M = cv2.getPerspectiveTransform(srcPoints, dstPoints)
+                dstPointsComputed.append((cx, cy))
+        dstPointsComputed = np.array(dstPointsComputed, dtype=np.float32)
+        dstPointsComputed = dstPointsComputed[::-1]
+        M = cv2.getPerspectiveTransform(srcPoints, dstPointsComputed)
     
-    warped = cv2.warpPerspective(trajectoryFrame, M, (frame.shape[1], frame.shape[0]))
+    warped = cv2.warpPerspective(trajectoryFrame, M, (scaledFrame.shape[1], scaledFrame.shape[0]))
     
     # Blend with alpha
     alpha = warped[..., 3] / 255.0
-    frame = ((1 - alpha[..., None]) * frame + alpha[..., None] * warped[..., :3]).astype(np.uint8)
+    scaledFrame = ((1 - alpha[..., None]) * scaledFrame + alpha[..., None] * warped[..., :3]).astype(np.uint8)
 
-    # Draw red dots on visualizeFrame at destination points
-    # for i, pt in enumerate(dstPoints):
-    #     cv2.circle(frame, tuple(pt.astype(int)), 10, (0, 0, 255), -1)
-    #     # Draw lines between points
-    #     cv2.line(frame, tuple(dstPoints[i].astype(int)), tuple(dstPoints[(i+1)%len(dstPoints)].astype(int)), (0, 0, 255), 2)
+    # Add debug text overlay
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    fontScale = 1 / DOWNSCALE
+    fontColor = (255, 255, 255)
+    thickness = 2 // DOWNSCALE
+    textX = 20 // DOWNSCALE
+    textYStart = 40 // DOWNSCALE
+    lineHeight = 40 // DOWNSCALE
+
+    if currentGpsPoint:
+        # Timestamp
+        timeText = f"Time: {currentGpsPoint['timestamp'].strftime('%H:%M:%S.%f')[:-3]}"
+        putTextWithOutline(scaledFrame, timeText, (textX, textYStart), font, fontScale, fontColor, thickness)
+
+        # GPS Fix
+        fixTypeVal = currentGpsPoint.get('fixType', 'N/A')
+        GPSColor = (0, 255, 0) if fixTypeVal == 3 else (0, 0, 255)
+        fixText = f"Fix: {fixTypeVal}"
+        putTextWithOutline(scaledFrame, fixText, (textX, textYStart + lineHeight), font, fontScale, GPSColor, thickness)
+
+        # Accuracy
+        accuracyVal = currentGpsPoint.get('accuracy', 99)
+        accuracyColor = (0, 255, 0) if accuracyVal <= 3 else (0, 0, 255)
+        accText = f"Accuracy: {accuracyVal:.2f}m"
+        putTextWithOutline(scaledFrame, accText, (textX, textYStart + 2 * lineHeight), font, fontScale, accuracyColor, thickness)
+
+        # Speed
+        speedVal = currentGpsPoint.get('speed2d', 0)
+        speed2dKph = speedVal * 3.6
+        speedText = f"Speed: {speedVal:.1f} m/s ({speed2dKph:.1f} km/h)"
+        putTextWithOutline(scaledFrame, speedText, (textX, textYStart + 3 * lineHeight), font, fontScale, fontColor, thickness)
+        speedCoords = (textX, textYStart + 3 * lineHeight)
+
+        # Acceleration
+        accelVal = currentGpsPoint.get('acceleration', 0)
+        accelText = f"Acceleration: {accelVal:.1f} m/s^2"
+        putTextWithOutline(scaledFrame, accelText, (textX, textYStart + 4 * lineHeight), font, fontScale, fontColor, thickness)
+
+        # Turn Rate
+        turnRateVal = currentGpsPoint.get('turnRate', 0)
+        turnText = f"Turn Rate: {turnRateVal:.0f} deg/s"
+        putTextWithOutline(scaledFrame, turnText, (textX, textYStart + 5 * lineHeight), font, fontScale, fontColor, thickness)
+
+    if not gpsIsValid:
+        warningText = "Warning: Low GPS quality"
+        cv2.putText(scaledFrame, warningText, (textX, textYStart + 6 * lineHeight), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 1)
 
     # Add trajectory labels on the main frame
-    putTextWithOutline(frame, "Predicted (blue)", (10, frame.shape[0] - 100), cv2.FONT_HERSHEY_SIMPLEX, 1, blue, 2)
-    putTextWithOutline(frame, "Ground Truth (gray)", (10, frame.shape[0] - 60), cv2.FONT_HERSHEY_SIMPLEX, 1, gray, 2)
+    putTextWithOutline(scaledFrame, "Predicted (blue)", (10, scaledFrame.shape[0] - 50), cv2.FONT_HERSHEY_SIMPLEX, fontScale, blue, thickness)
+    putTextWithOutline(scaledFrame, "Ground Truth (gray)", (10, scaledFrame.shape[0] - 30), cv2.FONT_HERSHEY_SIMPLEX, fontScale, gray, thickness)
+
+    # Add requested speed
+    if predictions is not None and len(predictions) > 0:
+        firstVector = predictions[0]
+        distance = math.sqrt(firstVector[0]**2 + firstVector[1]**2)
+        requestedSpeedMs = distance / interval
+        requestedSpeedKph = requestedSpeedMs * 3.6
+        speedText = f"Predicted target speed: {requestedSpeedMs:.1f} m/s ({requestedSpeedKph:.1f} km/h)"
+        putTextWithOutline(scaledFrame, speedText, (speedCoords[0]+550//DOWNSCALE, speedCoords[1]), cv2.FONT_HERSHEY_SIMPLEX, fontScale, (*blue, 255), thickness)
 
     # Overlay attention map if provided
-    if attnMap is not None:
-        attnResized = cv2.resize(attnMap, (frame.shape[1], frame.shape[0]), interpolation=cv2.INTER_LINEAR)
+    if attnMap is not None and SHOWATTENTION:
+        attnResized = cv2.resize(attnMap, (scaledFrame.shape[1], scaledFrame.shape[0]), interpolation=cv2.INTER_LINEAR)
         attnNorm = attnResized / (attnResized.max() + 1e-8)
-        attnDisplay = (attnNorm ** 0.5)  # gamma correction to amplify midrange
+        attnDisplay = (attnNorm ** 0.5)  # gamma correction to amplify midrange 
         attnDisplay = (attnDisplay * 255).astype(np.uint8)
         heatmap = cv2.applyColorMap(attnDisplay, cv2.COLORMAP_JET)
 
         # Overlay with alpha
         alpha = 0.2
         # Frame = cv2.addWeighted(frame, 1 - alpha, heatmap, alpha, 0)
-        heatmap = cv2.resize(heatmap, (frame.shape[1] // 5, frame.shape[0] // 5))
+        heatmap = cv2.resize(heatmap, (scaledFrame.shape[1] // 5, scaledFrame.shape[0] // 5))
         cv2.imshow("Attention Map Overlay", heatmap)
 
-    # Resize frame to fit the display
-    newWidth = frame.shape[1] // 2
-    newHeight = frame.shape[0] // 2
+    if SHOWORIGINALTRAJ:
+        trajectoryResized = cv2.resize(trajectoryFrame, (trajectoryFrame.shape[1] // 3, trajectoryFrame.shape[0] // 3))
+        cv2.imshow("Trajectory Frame", trajectoryResized)
 
-    trajectoryResized = cv2.resize(trajectoryFrame, (trajectoryFrame.shape[1] // 4, trajectoryFrame.shape[0] // 4))
-    cv2.imshow("Trajectory Frame", trajectoryResized)
-
-    frame = cv2.resize(frame, (newWidth, newHeight))
-
-    cv2.imshow("Prediction (blue) vs Ground Truth (gray)", frame)
+    cv2.imshow("Prediction (blue) vs Ground Truth (gray)", scaledFrame)
 
 
-def runModel(modelPath, videoPath, temporalContextTimeWindow=0.1, useGPU=True):
+def runModel(modelPath, videoPath, temporalContextTimeWindow=0.1):
     # --- Initialization ---
-    device = torch.device("cuda" if useGPU and torch.cuda.is_available() else "cpu")
+    device = torch.device("cuda" if USEGPU and torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
     model = TrajectoryModel(feat_dim=512, hidden_dim=1024, pred_steps=12).to(device)
     model.load_state_dict(torch.load(modelPath, map_location=device))
@@ -239,8 +262,6 @@ def runModel(modelPath, videoPath, temporalContextTimeWindow=0.1, useGPU=True):
     translationY = 11
     translationZ = 39
     scale = 1.0
-    trajectoryCanvasWidth = 1000
-    trajectoryCanvasHeight = 1500
     srcPoints = np.array([(0, 0), (trajectoryCanvasWidth - 1, 0), (trajectoryCanvasWidth - 1, trajectoryCanvasHeight - 1), (0, trajectoryCanvasHeight - 1)], dtype=np.float32)
     centerX = frameWidth // 2
     centerY = frameHeight // 2
@@ -276,6 +297,10 @@ def runModel(modelPath, videoPath, temporalContextTimeWindow=0.1, useGPU=True):
     dstPoints = dstPoints[::-1]  # Reverse order
     warpingMatrix = cv2.getPerspectiveTransform(srcPoints, dstPoints)
 
+    # Compute for half resolution
+    dstPointsHalf = dstPoints * 0.5
+    warpingMatrixHalf = cv2.getPerspectiveTransform(srcPoints, dstPointsHalf)
+
     fps = cap.get(cv2.CAP_PROP_FPS)
     if fps == 0: fps = 30
     timePerFrame = 1.0 / fps
@@ -284,6 +309,18 @@ def runModel(modelPath, videoPath, temporalContextTimeWindow=0.1, useGPU=True):
     frameBufferSize = max(int(fps * temporalContextTimeWindow), 2)
     nextFrameTime = time.time()
 
+    debugTimes = {
+        "frame": [],
+        "modelPrediction": [],
+        "groundTruthCalc": [],
+        "visualization": [],
+        "avg_frame": 0,
+        "avg_modelPrediction": 0,
+        "avg_groundTruthCalc": 0,
+        "avg_visualization": 0
+    }
+    
+
     # Create control window with sliders
     # cv2.namedWindow("Controls")
     # cv2.createTrackbar("Traj Angle", "Controls", 0, 150, lambda x: None)  # 0 parallel, 150 perpendicular
@@ -291,11 +328,12 @@ def runModel(modelPath, videoPath, temporalContextTimeWindow=0.1, useGPU=True):
     # cv2.createTrackbar("Translation Z", "Controls", 30, 80, lambda x: None)  # 0 = 20m, 30 = 50m, 80 = 100m
     # cv2.createTrackbar("Scale", "Controls", 10, 20, lambda x: None)  # 10 = 1.0, 20 = 2.0
 
-    lastPrediction = None
-    lastLabels = None
+    prediction = None
+    labels = None
     lastAttnMap = None
 
     # --- Main Processing Loop ---
+    print()
     with torch.no_grad():
         while cap.isOpened():
             currentTime = time.time()
@@ -313,14 +351,15 @@ def runModel(modelPath, videoPath, temporalContextTimeWindow=0.1, useGPU=True):
                 gpsIsValid, fixType, accuracy = [False, 0, float('inf')]
                 if currentGpsPoint:
                     gpsIsValid, fixType, accuracy = isGpsDataValid(currentGpsPoint, gpsData, currentFrameTime)
-                    speed = currentGpsPoint.get('speed2d', 0.0)
-                    acceleration = currentGpsPoint.get('acceleration', 0.0)
-                    turnRate = currentGpsPoint.get('turnRate', 0.0)
-                else:
-                    speed, acceleration, turnRate = 0.0, 0.0, 0.0
+                    # speed = currentGpsPoint.get('speed2d', 0.0)
+                    # acceleration = currentGpsPoint.get('acceleration', 0.0)
+                    # turnRate = currentGpsPoint.get('turnRate', 0.0)
+                # else:
+                #     speed, acceleration, turnRate = 0.0, 0.0, 0.0
 
 
                 # --- Frame Buffering and Tensor Preparation ---
+                debugTimeStart = time.time()
                 frameBuffer.append(frame)
 
                 prediction = None
@@ -345,10 +384,10 @@ def runModel(modelPath, videoPath, temporalContextTimeWindow=0.1, useGPU=True):
                     # --- Prediction ---
                     prediction, _, attnMaps = model(currentImgTensor, prevImgTensor)
 
-                    if attnMap is not None:
-                        print(f"Attention map stats: min={attnMap.min():.4f}, max={attnMap.max():.4f}, mean={attnMap.mean():.4f}")
+                    # if attnMap is not None:
+                    #     print(f"Attention map stats: min={attnMap.min():.4f}, max={attnMap.max():.4f}, mean={attnMap.mean():.4f}")
 
-                    lastPrediction = prediction
+                    # prediction = prediction
                     lastAttnMap = attnMaps[-1].squeeze().cpu().numpy() if attnMaps else None
 
 
@@ -366,94 +405,28 @@ def runModel(modelPath, videoPath, temporalContextTimeWindow=0.1, useGPU=True):
                     #     prevHeight, prevWidth = prevVis.shape[:2]
                     #     prevResized = cv2.resize(prevVis, (prevWidth // 4, prevHeight // 4))
                     #     cv2.imshow("Previous Frame", prevResized)
-
-                # --- Debug Text Overlay ---
-                font = cv2.FONT_HERSHEY_SIMPLEX
-                fontScale = 1
-                fontColor = (255, 255, 255)
-                thickness = 2
-                textX = 10
-                textYStart = 40
-                lineHeight = 40
-
-                if currentGpsPoint:
-                    # Timestamp
-                    timeText = f"Time: {currentGpsPoint['timestamp'].strftime('%H:%M:%S.%f')[:-3]}"
-                    putTextWithOutline(visualizeFrame, timeText, (textX, textYStart), font, fontScale, fontColor, thickness)
-
-                    # GPS Fix
-                    fixTypeVal = currentGpsPoint.get('fixType', 'N/A')
-                    GPSColor = (0, 255, 0) if fixTypeVal == 3 else (0, 0, 255)
-                    fixText = f"Fix: {fixTypeVal}"
-                    putTextWithOutline(visualizeFrame, fixText, (textX, textYStart + lineHeight), font, fontScale, GPSColor, thickness)
-
-                    # Accuracy
-                    accuracyVal = currentGpsPoint.get('accuracy', 99)
-                    accuracyColor = (0, 255, 0) if accuracyVal <= 3 else (0, 0, 255)
-                    accText = f"Accuracy: {accuracyVal:.2f}m"
-                    putTextWithOutline(visualizeFrame, accText, (textX, textYStart + 2 * lineHeight), font, fontScale, accuracyColor, thickness)
-
-                    # Speed
-                    speedVal = currentGpsPoint.get('speed2d', 0)
-                    speed2dKph = speedVal * 3.6
-                    speedText = f"Speed: {speedVal:.1f} m/s ({speed2dKph:.1f} km/h)"
-                    putTextWithOutline(visualizeFrame, speedText, (textX, textYStart + 3 * lineHeight), font, fontScale, fontColor, thickness)
-
-                    # Acceleration
-                    accelVal = currentGpsPoint.get('acceleration', 0)
-                    accelText = f"Acceleration: {accelVal:.1f} m/s^2"
-                    putTextWithOutline(visualizeFrame, accelText, (textX, textYStart + 4 * lineHeight), font, fontScale, fontColor, thickness)
-
-                    # Turn Rate
-                    turnRateVal = currentGpsPoint.get('turnRate', 0)
-                    turnText = f"Turn Rate: {turnRateVal:.0f} deg/s"
-                    putTextWithOutline(visualizeFrame, turnText, (textX, textYStart + 5 * lineHeight), font, fontScale, fontColor, thickness)
-
-                if not gpsIsValid:
-                    warningText = "Warning: Low GPS quality"
-                    cv2.putText(visualizeFrame, warningText, (textX, textYStart + 6 * lineHeight), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
-
+                    
+                modelPredictionTime = time.time() - debugTimeStart
 
                 # --- Ground Truth Trajectory ---
+                debugTimeStart = time.time()
                 labels = None
                 if gpsIsValid and currentGpsPoint:
-                    interval = 3.0 / 12.0
                     futureTrajectory = calculateFutureTrajectory(gpsData, currentGpsPoint, currentFrameTime, duration=3.0, interval=interval)
                     validVectors = [v for v in futureTrajectory if v is not None]
                     if len(validVectors) >= 12:
                         labelsList = [[v['x'], v['y']] for v in validVectors]
                         labels = torch.tensor(labelsList[:12], dtype=torch.float32)
+                groundTruthCalcTime = time.time() - debugTimeStart
 
-                lastLabels = labels
 
                 # --- Visualization ---
+                debugTimeStart = time.time()
                 attnMap = lastAttnMap
-                visualizePredictions(visualizeFrame, lastPrediction.squeeze() if lastPrediction is not None else None, lastLabels, attnMap, warpingMatrix, dstPoints)
+                visualizePredictions(visualizeFrame, prediction.squeeze() if prediction is not None else None, labels, attnMap, warpingMatrixHalf, dstPoints, currentGpsPoint, gpsIsValid)
+                visualizationTime = time.time() - debugTimeStart
 
-                # Check for quit key
-                key = cv2.waitKey(1)
-                if key != -1:
-                    print(f"Key pressed: {key}")
-                if key & 0xFF == ord('q'):
-                    print(f"Final warping parameters:")
-                    print(f"Traj Angle: 102°")
-                    print(f"Translation Y: 11m")
-                    print(f"Translation Z: 39m")
-                    print(f"Scale: 1.0")
-                    break
-                elif key == 106 or key == 242:  # J: go back 10s
-                    print("Seeking back 10 seconds")
-                    newMs = max(0, currentVideoMs - 10000)
-                    cap.set(cv2.CAP_PROP_POS_MSEC, newMs)
-                    frameBuffer = []
-                    nextFrameTime = time.time()
-                elif key == 108 or key == 243:  # L: go forward 10s
-                    print("Seeking forward 10 seconds")
-                    newMs = currentVideoMs + 10000
-                    cap.set(cv2.CAP_PROP_POS_MSEC, newMs)
-                    frameBuffer = []
-                    nextFrameTime = time.time()
-
+                waitTime = 1
                 # Update next frame time
                 nextFrameTime += timePerFrame
 
@@ -462,31 +435,44 @@ def runModel(modelPath, videoPath, temporalContextTimeWindow=0.1, useGPU=True):
                 waitTime = (nextFrameTime - currentTime) * 1000
 
                 # --- Visualization ---
-                attnMap = lastAttnMap
-                visualizePredictions(visualizeFrame, lastPrediction.squeeze() if lastPrediction is not None else None, lastLabels, attnMap, warpingMatrix, dstPoints)
+                # attnMap = lastAttnMap
+                # visualizePredictions(visualizeFrame, lastPrediction.squeeze() if lastPrediction is not None else None, lastLabels, attnMap, warpingMatrix, dstPoints)
 
-                key = cv2.waitKey(max(1, int(waitTime)))
-                if key != -1:
-                    print(f"Key pressed: {key}")
-                if key & 0xFF == ord('q'):
-                    print(f"Final warping parameters:")
-                    print(f"Traj Angle: 102°")
-                    print(f"Translation Y: 11m")
-                    print(f"Translation Z: 39m")
-                    print(f"Scale: 1.0")
-                    break
-                elif key == 2424832 or key == 242:  # Left arrow: go back 10s
-                    print("Seeking back 10 seconds")
-                    newMs = max(0, currentVideoMs - 10000)
-                    cap.set(cv2.CAP_PROP_POS_MSEC, newMs)
-                    frameBuffer = []
-                    nextFrameTime = time.time()
-                elif key == 2555904 or key == 243:  # Right arrow: go forward 10s
-                    print("Seeking forward 10 seconds")
-                    newMs = currentVideoMs + 10000
-                    cap.set(cv2.CAP_PROP_POS_MSEC, newMs)
-                    frameBuffer = []
-                    nextFrameTime = time.time()
+            frameTime = time.time() - currentTime
+            debugTimes["frame"].append(frameTime)
+            debugTimes["modelPrediction"].append(modelPredictionTime)
+            debugTimes["groundTruthCalc"].append(groundTruthCalcTime)
+            debugTimes["visualization"].append(visualizationTime)
+
+            # calculate the average times
+            for key in debugTimes.keys():
+                if not key.startswith("avg_"):
+                    averageKey = f"avg_{key}"
+                    debugTimes[averageKey] = sum(debugTimes[key]) / len(debugTimes[key]) if debugTimes[key] else 0
+                    debugTimes[key] = debugTimes[key][-100:]  # keep only last 100 entries
+
+            avg_FPS = 1.0 / debugTimes["avg_frame"] if debugTimes["avg_frame"] > 0 else 0.0
+
+            print("\r" + f"avg_frame: {debugTimes['avg_frame']:.3f}s ({avg_FPS:.1f} FPS) ≈ avg_modelPrediction: {debugTimes['avg_modelPrediction']:.3f}s + avg_groundTruthCalc: {debugTimes['avg_groundTruthCalc']:.3f}s + avg_visualization: {debugTimes['avg_visualization']:.3f}s", end='   ')
+            
+            key = cv2.waitKey(max(1, int(waitTime)))
+
+            if key != -1:
+                print(f"Key pressed: {key}")
+            if key & 0xFF == ord('q'): # Quit
+                break
+            elif key == 2424832 or key == ord('j'):  # Left arrow/j: go back 10s
+                print("\nSeeking back 10 seconds")
+                newMs = max(0, currentVideoMs - 10000)
+                cap.set(cv2.CAP_PROP_POS_MSEC, newMs)
+                frameBuffer = []
+                nextFrameTime = time.time()
+            elif key == 2555904 or key == ord('l'):  # Right arrow/l: go forward 10s
+                print("\nSeeking forward 10 seconds")
+                newMs = currentVideoMs + 10000
+                cap.set(cv2.CAP_PROP_POS_MSEC, newMs)
+                frameBuffer = []
+                nextFrameTime = time.time()
 
     # --- Cleanup ---
     cap.release()
@@ -495,7 +481,12 @@ def runModel(modelPath, videoPath, temporalContextTimeWindow=0.1, useGPU=True):
 
 
 if __name__ == '__main__':
+    DOWNSCALE = 2
+    SHOWATTENTION = False
+    SHOWORIGINALTRAJ = False
+    USEGPU = False
+    
+    
     modelPath = r"C:\Users\Aypisam\Documents\VS_Python_Project\Autopilot\training\run13\best_model.pth"
     videoPath = r"C:\Users\Aypisam\Documents\VS_Python_Project\Autopilot\test_drive\2025.06.24\GP065969.MP4"
-    useGPU = False
-    runModel(modelPath, videoPath, useGPU=useGPU)
+    runModel(modelPath, videoPath)
