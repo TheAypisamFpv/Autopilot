@@ -554,7 +554,7 @@ def generateDataset(videoPath: str, outputDir: str, frameInterval: int, startInd
         newWidth = int(frame.shape[1] * (newHeight / frame.shape[0]))
         processedFrame = cv2.resize(frame, (newWidth, newHeight), interpolation=cv2.INTER_AREA)
 
-        frameParams = getRandomizeFrameParams(deltaExpo=0.15, deltaGamma=0.15, deltaBrightness=0.15, deltaContrast=0.15)
+        frameParams = getRandomizeFrameParams(deltaExpo=0.1, deltaGamma=0.1, deltaBrightness=0.1, deltaContrast=0.1)
 
         if not ret:
             break
@@ -677,16 +677,21 @@ def main(Path: str, outputDir: str, frameInterval: int, vectorsNumbers: int, vec
     """
     outputDir = os.path.join(outputDir, f"output_{vectorsNumbers}_{vectorTimeWindow}")
     startIndex = manualStartIndex if manualStartIndex is not False else 0
+
+    print(f"Output Directory: {outputDir}\n")
+    
+    
     # check if the provided path is a video file or a directory
     if os.path.isfile(Path):
         # If it's a file, process it directly
         startIndex = generateDataset(Path, outputDir, frameInterval, startIndex, vectorsNumbers, vectorTimeWindow, temporalContextTimeWindow, DEBUGVIZ=DEBUGVIZ)
     elif os.path.isdir(Path):
-        # If it's a directory, process all MP4 files in it
-        for filename in os.listdir(Path):
-            if filename.endswith('.MP4'):
-                videoPath = os.path.join(Path, filename)
-                startIndex = generateDataset(videoPath, outputDir, frameInterval, startIndex, vectorsNumbers, vectorTimeWindow, temporalContextTimeWindow, DEBUGVIZ=DEBUGVIZ)
+        # If it's a directory, recursively process all MP4 files in it and subdirectories
+        for root, dirs, files in os.walk(Path):
+            for filename in files:
+                if filename.endswith('.MP4'):
+                    videoPath = os.path.join(root, filename)
+                    startIndex = generateDataset(videoPath, outputDir, frameInterval, startIndex, vectorsNumbers, vectorTimeWindow, temporalContextTimeWindow, DEBUGVIZ=DEBUGVIZ)
     else:
         print(f"Error: {Path} is neither a file nor a directory.")
 
@@ -695,16 +700,16 @@ def main(Path: str, outputDir: str, frameInterval: int, vectorsNumbers: int, vec
 
 
 if __name__ == "__main__":
-    videoPath = r"C:\Users\Aypisam\Documents\VS_Python_Project\Autopilot\test_drive\2025.08.25"
-    outputDir = r"C:\Users\Aypisam\Documents\VS_Python_Project\Autopilot\dataset"
+    videoPath = r"D:\VS_Python_Project\Autopilot\Autopilot\Test_drive\2025\2025.08.25"
+    outputDir = r"D:\VS_Python_Project\Autopilot\Autopilot\dataset"
     frameInterval = 0 # interval between each frame sample, in seconds
     vectorsNumbers = 12
     vectorTimeWindow = 3.0 # seconds
 
     temporalContextTimeWindow = 0.1 # seconds
 
-    manualStartIndex = 432501  # Starting index for dataset items, can be adjusted if resuming from a previous run
+    manualStartIndex = 556683  # Starting index for dataset items, can be adjusted if resuming from a previous run
 
-    debugViz = True
+    debugViz = False
     
     main(videoPath, outputDir, frameInterval, vectorsNumbers, vectorTimeWindow, temporalContextTimeWindow, manualStartIndex, DEBUGVIZ=debugViz)

@@ -310,17 +310,18 @@ def extractGpsData(videoPath: str):
 def main(path:str):
     if os.path.isdir(path):
         print(f"Processing all MP4 files in directory: {path}...\n")
-        for file in os.listdir(path):
-            if file.lower().endswith('.mp4'):
-                videoPath = os.path.join(path, file)
-                extractGpsData(videoPath)
-                print()
-                
+        for root, dirs, files in os.walk(path):
+            for file in files:
+                if file.lower().endswith('.mp4'):
+                    videoPath = os.path.join(root, file)
+                    extractGpsData(videoPath)
+                    print()
+                    
     elif os.path.isfile(path) and path.lower().endswith('.mp4'):
         extractGpsData(path)
     else:
         print(f"Error: The path '{path}' is not a valid MP4 file or directory.")
 
 if __name__ == "__main__":
-    path = r"C:\Users\Aypisam\Documents\VS_Python_Project\Autopilot\test_drive\2025.08.19"
+    path = r"D:\VS_Python_Project\Autopilot\Autopilot\Test_drive\2024.02.01"
     main(path)
