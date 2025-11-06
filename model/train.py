@@ -28,6 +28,7 @@ class DrivingDataset(Dataset):
     """
     Dataset for trajectory prediction.
     Loads paired images (previous and current) and trajectory vectors.
+    Optionally filters samples using 'balanced.json' if present.
     """
 
     def __init__(self, datasetDir, transform=None, maxSize=None, predSteps=6, dtype=torch.float32):
@@ -35,10 +36,27 @@ class DrivingDataset(Dataset):
         self.labelsDir = os.path.join(datasetDir, "labels")
         self.imagesDir = os.path.join(datasetDir, "images")
         self.transform = transform
-        self.samples = [f.split(".")[0] for f in os.listdir(self.labelsDir) if f.endswith(".txt")]
-        self.maxSize = maxSize
         self.predSteps = predSteps
         self.dtype = dtype
+
+        # Load all label indices
+        allSamples = [f.split(".")[0] for f in os.listdir(self.labelsDir) if f.endswith(".txt")]
+
+        # Check for balanced.json
+        balancedJsonPath = os.path.join(datasetDir, "balanced.json")
+        if os.path.exists(balancedJsonPath):
+            print(f"Found balanced.json - using filtered dataset ({balancedJsonPath})")
+            with open(balancedJsonPath, 'r') as f:
+                balancedData = json.load(f)
+            
+            keepIndices = set(balancedData.get("keep", []))
+            self.samples = [idx for idx in allSamples if idx in keepIndices]
+            print(f"Filtered to {len(self.samples)} / {len(allSamples)} samples based on balanced.json")
+        else:
+            self.samples = allSamples
+            print(f"No balanced.json found - using all {len(self.samples)} samples")
+
+        self.maxSize = maxSize
 
     def __len__(self):
         if self.maxSize is not None:
@@ -159,8 +177,8 @@ def trainModel(
     useAuxDyn=False,
     featDim=256,
     hiddenDim=256,
-    predSteps=6,
-    intervalSeconds=0.1,
+    predSteps=12,
+    intervalSeconds=0.25,
     deviceOverride=None,
     resumeModelPath=None,
 ):
@@ -182,19 +200,24 @@ def trainModel(
         featDim (int): Feature dimension for model.
         hiddenDim (int): Hidden dimension for model.
         predSteps (int): Number of prediction steps.
+        intervalSeconds (float): Time interval between prediction steps.
         deviceOverride (str or None): Device to use ('cpu' or 'cuda'), or None for auto-detect.
         resumeModelPath (str or None): Path to a previously trained model to resume training from.
     """
+    print()
     
     if not os.path.exists(datasetDir):
         raise FileNotFoundError(f"Dataset directory '{datasetDir}' does not exist.")
 
     if resumeModelPath:
-        resumeDir = os.path.dirname(resumeModelPath)
-        paramsPath = os.path.join(resumeDir, "training_params.json")
-        historyPath = os.path.join(resumeDir, "training_history.csv")
+        print(f"Resuming training from model: '{resumeModelPath}'...")
+        runDir = os.path.dirname(resumeModelPath)
+        paramsPath = os.path.join(runDir, "training_params.json")
+        historyPath = os.path.join(runDir, "training_history.csv")
+        
         if not os.path.exists(paramsPath) or not os.path.exists(historyPath):
-            raise FileNotFoundError(f"Cannot resume: missing training_params.json or training_history.csv in {resumeDir}")
+            raise FileNotFoundError(f"Cannot resume: missing 'training_params.json' or 'training_history.csv' in '{runDir}'")
+        
         with open(paramsPath, "r") as f:
             loadedParams = json.load(f)
         # Set parameters from loaded, keeping passed values if missing
@@ -224,6 +247,21 @@ def trainModel(
             predSteps = loadedParams["predSteps"]
         if "intervalSeconds" in loadedParams:
             intervalSeconds = loadedParams["intervalSeconds"]
+
+        with open(historyPath, "r") as f:
+            historyDf = pd.read_csv(f)
+
+        history = {
+            "train_loss": historyDf["train_loss"].tolist(),
+            "val_loss": historyDf["val_loss"].tolist(),
+            "train_ADE": historyDf["train_ADE"].tolist(),
+            "val_ADE": historyDf["val_ADE"].tolist(),
+            "train_FDE": historyDf["train_FDE"].tolist(),
+            "val_FDE": historyDf["val_FDE"].tolist(),
+        }
+
+        # calculate start epoch
+        startEpoch = len(history["train_loss"])
         
         deviceOverride = loadedParams.get("deviceOverride", deviceOverride)
     else:
@@ -482,26 +520,33 @@ def trainModel(
 
 
 if __name__ == "__main__":
-    datasetPath = r"D:\VS_Python_Project\Autopilot\Autopilot\dataset\output"
+    """
+    PLEASE MAKE SURE TO USE THE CORRECT DATASET (like image size, time window, etc.)
+    """
+    datasetPath = r"D:\VS_Python_Project\Autopilot\Autopilot\dataset\output_12_3.0_0.1_framesize640x360_balanced"
     # Parse dataset path to extract parameters
     basename = os.path.basename(datasetPath)
     if basename.startswith('output_'):
         parts = basename.split('_')
-        if len(parts) == 3:
+        if len(parts) >= 3:
             numVectors = int(parts[1])
             vectorTimeWindow = float(parts[2])
             intervalSeconds = vectorTimeWindow / numVectors
+            # temporalContext = float(parts[3])
+            # imageSize = parts[4].removeprefix("framesize").split("x")
+            # imageSize = (int(imageSize[1]), int(imageSize[0]))  # (height, width)
+            
             predSteps = numVectors
             print(f"Parsed from dataset path: numVectors={numVectors}, vectorTimeWindow={vectorTimeWindow}, intervalSeconds={intervalSeconds}")
         else:
             print("Warning: Could not parse dataset path, using defaults")
             predSteps = 12
-            intervalSeconds = 0.1
+            intervalSeconds = 0.25
     else:
         print("Warning: Dataset path does not start with 'output_', using defaults")
         predSteps = 12
-        intervalSeconds = 0.1
-    
+        intervalSeconds = 0.25
+
     datasetMaxSize = None     # Maximum number of samples to load from the dataset (None = use all available)
     numEpochs = 150           # Total number of training epochs (full passes through the dataset)
     patience = 15             # Early stopping patience (stop if no val improvement for this many epochs)

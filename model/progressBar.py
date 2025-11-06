@@ -5,7 +5,7 @@ class Style:
     BLOCK = 0
     DOT_GRID = 1
 
-def getProgressBar(completion: float, wheelIndex=None, style=None, maxbarLength=75):
+def getProgressBar(completion: float, wheelIndex: int = None, style: int = None, maxbarLength: int = 75):
     """
     Generate a progress bar with optional style selection.
     

@@ -477,13 +477,24 @@ def visualizeFutureTrajectory(frame: np.ndarray, previousFrame: np.ndarray, vect
     cv2.waitKey(1)
 
 
-def generateDataset(videoPath: str, outputDir: str, frameInterval: int, startIndex: int, vectorsNumbers: int, vectorTimeWindow: float, temporalContextTimeWindow: float, DEBUGVIZ: bool = False):
+def generateDataset(
+    videoPath: str,
+    outputDir: str,
+    imageSize: Tuple[int, int],
+    frameInterval: int,
+    startIndex: int,
+    vectorsNumbers: int,
+    vectorTimeWindow: float,
+    temporalContextTimeWindow: float,
+    DEBUGVIZ: bool = False
+    ):
     """
     Generate dataset by processing video frames and corresponding GPS data
     
     Args:
         videoPath: Path to the input video file
         outputDir: Directory to save the generated dataset
+        imageSize: Tuple[int, int], Size to resize frames to (width, height)
         frameInterval: Interval in seconds to skip frames (0 for no skipping)
         startIndex: Starting index for dataset items
         vectorsNumbers: Number of future trajectory vectors to generate
@@ -549,10 +560,8 @@ def generateDataset(videoPath: str, outputDir: str, frameInterval: int, startInd
 
         ret, frame = cap.read()
 
-        # Scale image down to 270p (480x270)
-        newHeight = 270
-        newWidth = int(frame.shape[1] * (newHeight / frame.shape[0]))
-        processedFrame = cv2.resize(frame, (newWidth, newHeight), interpolation=cv2.INTER_AREA)
+        # Scale image down to specified size
+        processedFrame = cv2.resize(frame, imageSize, interpolation=cv2.INTER_AREA)
 
         frameParams = getRandomizeFrameParams(deltaExpo=0.1, deltaGamma=0.1, deltaBrightness=0.1, deltaContrast=0.1)
 
@@ -662,12 +671,23 @@ def generateDataset(videoPath: str, outputDir: str, frameInterval: int, startInd
     return datasetIndex  # Return the last index used for further processing if needed
 
 
-def main(Path: str, outputDir: str, frameInterval: int, vectorsNumbers: int, vectorTimeWindow: float, temporalContextTimeWindow: float, manualStartIndex = False, DEBUGVIZ:bool = False):
+def main(
+    Path: str,
+    outputDir: str,
+    imageSize: Tuple[int, int],
+    frameInterval: int,
+    vectorsNumbers: int,
+    vectorTimeWindow: float,
+    temporalContextTimeWindow: float,
+    manualStartIndex = False,
+    DEBUGVIZ:bool = False
+    ):
     """
     Main function to generate dataset from a video file or directory of video files.
     Args:
     - Path (str): Path to the video file or directory.
     - outputDir (str): Directory to save the generated dataset.
+    - imageSize (Tuple[int, int]): Size to resize frames to (width, height).
     - frameInterval (int): Interval between each frame sample, in seconds.
     - vectorsNumbers (int): Number of vectors to generate for each frame.
     - vectorTimeWindow (float): Time window for future trajectory prediction, in seconds.
@@ -675,23 +695,30 @@ def main(Path: str, outputDir: str, frameInterval: int, vectorsNumbers: int, vec
     - manualStartIndex (int, optional): Starting index for dataset items, can be adjusted if resuming from a previous run.
     - DEBUGVIZ (bool, optional): Flag to enable debug visualization.
     """
-    outputDir = os.path.join(outputDir, f"output_{vectorsNumbers}_{vectorTimeWindow}")
+    outputDir = os.path.join(outputDir, f"output_{vectorsNumbers}_{vectorTimeWindow}_{temporalContextTimeWindow}_framesize{imageSize[0]}x{imageSize[1]}")
     startIndex = manualStartIndex if manualStartIndex is not False else 0
 
+    # if that directory exists, add a number "(x)" at the end until a non-existing directory is found
+    counter = 1
+    while os.path.exists(outputDir):
+        outputDir = os.path.join(outputDir + f"({counter})")
+        counter += 1
+
     print(f"Output Directory: {outputDir}\n")
-    
-    
+
+    os.makedirs(outputDir, exist_ok=True)
+
     # check if the provided path is a video file or a directory
     if os.path.isfile(Path):
         # If it's a file, process it directly
-        startIndex = generateDataset(Path, outputDir, frameInterval, startIndex, vectorsNumbers, vectorTimeWindow, temporalContextTimeWindow, DEBUGVIZ=DEBUGVIZ)
+        startIndex = generateDataset(Path, outputDir, imageSize, frameInterval, startIndex, vectorsNumbers, vectorTimeWindow, temporalContextTimeWindow, DEBUGVIZ=DEBUGVIZ)
     elif os.path.isdir(Path):
         # If it's a directory, recursively process all MP4 files in it and subdirectories
         for root, dirs, files in os.walk(Path):
             for filename in files:
                 if filename.endswith('.MP4'):
                     videoPath = os.path.join(root, filename)
-                    startIndex = generateDataset(videoPath, outputDir, frameInterval, startIndex, vectorsNumbers, vectorTimeWindow, temporalContextTimeWindow, DEBUGVIZ=DEBUGVIZ)
+                    startIndex = generateDataset(videoPath, outputDir, imageSize, frameInterval, startIndex, vectorsNumbers, vectorTimeWindow, temporalContextTimeWindow, DEBUGVIZ=DEBUGVIZ)
     else:
         print(f"Error: {Path} is neither a file nor a directory.")
 
@@ -700,16 +727,17 @@ def main(Path: str, outputDir: str, frameInterval: int, vectorsNumbers: int, vec
 
 
 if __name__ == "__main__":
-    videoPath = r"D:\VS_Python_Project\Autopilot\Autopilot\Test_drive\2025\2025.08.25"
+    videoPath = r"D:\VS_Python_Project\Autopilot\Autopilot\Test_drive\2025"
     outputDir = r"D:\VS_Python_Project\Autopilot\Autopilot\dataset"
     frameInterval = 0 # interval between each frame sample, in seconds
+    imageSize = (640, 360)  # Width, Height
     vectorsNumbers = 12
     vectorTimeWindow = 3.0 # seconds
 
     temporalContextTimeWindow = 0.1 # seconds
 
-    manualStartIndex = 556683  # Starting index for dataset items, can be adjusted if resuming from a previous run
+    manualStartIndex = 0  # Starting index for dataset items, can be adjusted if resuming from a previous run
 
     debugViz = False
     
-    main(videoPath, outputDir, frameInterval, vectorsNumbers, vectorTimeWindow, temporalContextTimeWindow, manualStartIndex, DEBUGVIZ=debugViz)
+    main(videoPath, outputDir, imageSize, frameInterval, vectorsNumbers, vectorTimeWindow, temporalContextTimeWindow, manualStartIndex, DEBUGVIZ=debugViz)
