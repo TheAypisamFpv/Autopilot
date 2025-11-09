@@ -243,7 +243,7 @@ if __name__ == "__main__":
     img1 = torch.randn(B, 3, 360, 640)
     img2 = torch.randn(B, 3, 360, 640)
 
-    model = TrajectoryModel(featDim=512, hiddenDim=768, predSteps=12, useAuxDyn=False)
+    model = TrajectoryModel(featDim=512, hiddenDim=512, predSteps=12, useAuxDyn=False)
     model.eval()
 
     with torch.no_grad():

@@ -533,7 +533,7 @@ if __name__ == "__main__":
     gradAccumSteps = 1        # Gradient accumulation steps (simulates larger effective batch if >1)
     learningRate = 5e-5       # Optimized for transformer stability
     featDim = 512             # Feature dimension in the model
-    hiddenDim = 768           # Hidden dimension in the model
+    hiddenDim = 512           # Hidden dimension in the model
     useAuxDyn = False         # Whether to enable auxiliary dynamics head (speed/accel prediction)
     resumeModelPath = None    # Set to path like "training/run13/best_model.pth" to resume training
 
