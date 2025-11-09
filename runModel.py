@@ -518,11 +518,11 @@ def runModel(modelPath, videoPath, temporalContextTimeWindow=0.1):
 
 if __name__ == '__main__':
     DOWNSCALE = 2
-    SHOWATTENTION = False
-    SHOWORIGINALTRAJ = False
+    SHOWATTENTION = True
+    SHOWORIGINALTRAJ = True
     USEGPU = False
     
     
     modelPath = r"C:\Users\Aypisam\Documents\VS_Python_Project\Autopilot\training\run15\best_model.pth"
-    videoPath = r"C:\Users\Aypisam\Documents\VS_Python_Project\Autopilot\test_drive\2025.08.19\GP095986.MP4"
+    videoPath = r"C:\Users\Aypisam\Documents\VS_Python_Project\Autopilot\test_drive\2025.06.24\GP065969.MP4"
     runModel(modelPath, videoPath)

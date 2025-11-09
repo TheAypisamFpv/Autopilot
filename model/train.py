@@ -1,9 +1,3 @@
-"""
-Training script for trajectory prediction using TrajectoryModel.
-Handles dataset loading, model training with AMP and gradient accumulation,
-and evaluation with ADE/FDE metrics.
-"""
-
 import os
 import time
 import math
@@ -22,6 +16,9 @@ import json
 
 from CreateModel import TrajectoryModel
 from progressBar import getProgressBar
+
+# Enable expandable segments for better memory management
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
 
 class DrivingDataset(Dataset):
@@ -247,27 +244,17 @@ def trainModel(
             predSteps = loadedParams["predSteps"]
         if "intervalSeconds" in loadedParams:
             intervalSeconds = loadedParams["intervalSeconds"]
+        if "deviceOverride" in loadedParams:
+            deviceOverride = loadedParams["deviceOverride"]
 
-        with open(historyPath, "r") as f:
-            historyDf = pd.read_csv(f)
-
-        history = {
-            "train_loss": historyDf["train_loss"].tolist(),
-            "val_loss": historyDf["val_loss"].tolist(),
-            "train_ADE": historyDf["train_ADE"].tolist(),
-            "val_ADE": historyDf["val_ADE"].tolist(),
-            "train_FDE": historyDf["train_FDE"].tolist(),
-            "val_FDE": historyDf["val_FDE"].tolist(),
-        }
-
-        # calculate start epoch
+        historyDf = pd.read_csv(historyPath)
+        history = historyDf.to_dict(orient='list')
         startEpoch = len(history["train_loss"])
-        
-        deviceOverride = loadedParams.get("deviceOverride", deviceOverride)
+        print(f"Resuming from epoch {startEpoch}")
     else:
         runDir = getRunDir()
-        startEpoch = 0
         history = {"train_loss": [], "val_loss": [], "train_ADE": [], "val_ADE": [], "train_FDE": [], "val_FDE": []}
+        startEpoch = 0
 
     device = (
         torch.device(deviceOverride)
@@ -277,25 +264,37 @@ def trainModel(
     useAmp = device.type == "cuda"
     scaler = GradScaler(device='cuda', enabled=useAmp)
 
+    transform = transforms.Compose([
+        transforms.Resize((360, 640)),  # Higher resolution
+        transforms.ColorJitter(brightness=0.15, contrast=0.15, saturation=0.05, hue=0.02),
+        transforms.RandomApply([transforms.GaussianBlur(kernel_size=(3, 3), sigma=(0.1, 1.0))], p=0.15),
+        transforms.RandomAffine(degrees=2.5, translate=(0.02, 0.02), scale=(0.98, 1.02)),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+    ])
+
+    dataset = DrivingDataset(datasetDir, transform=transform, maxSize=datasetMaxSize, predSteps=predSteps)
+    totalSamples = len(dataset)
+    trainSize = int(trainValSplit * totalSamples)
+    valSize = totalSamples - trainSize
+    trainDataset, valDataset = random_split(dataset, [trainSize, valSize])
+
+    numWorkers = 2
+    trainLoader = DataLoader(trainDataset, batch_size=batchSize, shuffle=True, num_workers=numWorkers, pin_memory=True)
+    valLoader = DataLoader(valDataset, batch_size=batchSize, shuffle=False, num_workers=numWorkers, pin_memory=True)
+
     model = TrajectoryModel(
         featDim=featDim, hiddenDim=hiddenDim, predSteps=predSteps, useAuxDyn=useAuxDyn, intervalSeconds=intervalSeconds
     ).to(device)
 
     if resumeModelPath:
         model.load_state_dict(torch.load(resumeModelPath))
-
-    # Use model's output spec to determine prediction steps if available
-    if hasattr(model, 'outputSpec') and 'num_vectors' in model.outputSpec:
-        predSteps = model.outputSpec['num_vectors']
+        print(f"Loaded model state from '{resumeModelPath}'")
 
     try:
         modelName = model.name
     except AttributeError:
         modelName = "I Guess We'll Never Know"
-
-    # Use model's output spec to determine prediction steps if available
-    if hasattr(model, 'outputSpec') and 'num_vectors' in model.outputSpec:
-        predSteps = model.outputSpec['num_vectors']
     
     # Export training parameters to JSON
     params = {
@@ -315,41 +314,14 @@ def trainModel(
         "deviceOverride": deviceOverride,
         "modelName": modelName,
     }
-    if resumeModelPath:
-        loadedParams["modelName"] = modelName
-        params = loadedParams
-    
     with open(os.path.join(runDir, "training_params.json"), "w") as f:
         json.dump(params, f, indent=4)
 
-    # Determine input image size from model spec or default
-    inputImageSize = (360, 640)  # Default fallback
-    if hasattr(model, 'inputSpec') and 'image_size' in model.inputSpec:
-        inputImageSize = model.inputSpec['image_size']
-
-    transform = transforms.Compose([
-        transforms.Resize(inputImageSize),  # Use model's expected input image size or default
-        transforms.ColorJitter(brightness=0.15, contrast=0.15, saturation=0.05, hue=0.02),
-        transforms.RandomApply([transforms.GaussianBlur(kernel_size=(3, 3), sigma=(0.1, 1.0))], p=0.15),
-        transforms.RandomAffine(degrees=2.5, translate=(0.02, 0.02), scale=(0.98, 1.02)),
-        transforms.ToTensor(),
-        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-    ])
-
-    dataset = DrivingDataset(datasetDir, transform=transform, maxSize=datasetMaxSize, predSteps=predSteps)
-    totalSamples = len(dataset)
-    trainSize = int(trainValSplit * totalSamples)
-    valSize = totalSamples - trainSize
-    trainDataset, valDataset = random_split(dataset, [trainSize, valSize])
-
-    numWorkers = 2
-    trainLoader = DataLoader(trainDataset, batch_size=batchSize, shuffle=True, num_workers=numWorkers, pin_memory=True)
-    valLoader = DataLoader(valDataset, batch_size=batchSize, shuffle=False, num_workers=numWorkers, pin_memory=True)
-
-    optimizer = optim.AdamW(model.parameters(), lr=learningRate, weight_decay=1e-4, eps=1e-8)
+    # Transformer-friendly optimizer
+    optimizer = optim.AdamW(model.parameters(), lr=learningRate, weight_decay=0.01, betas=(0.9, 0.95), eps=1e-8)
 
     totalSteps = math.ceil((len(trainLoader) * numEpochs) / max(1, gradAccumSteps))
-    warmupSteps = min(500, max(50, int(0.01 * totalSteps)))
+    warmupSteps = min(2000, max(50, int(0.05 * totalSteps)))  # Longer warmup for transformer
 
     def lrLambda(step):
         if step < warmupSteps:
@@ -359,17 +331,25 @@ def trainModel(
 
     scheduler = optim.lr_scheduler.LambdaLR(optimizer, lrLambda)
 
-    # Generate per-step weights based on number of prediction steps
-    perStepWeights = torch.exp(torch.linspace(math.log(1.6), math.log(0.025), predSteps, dtype=torch.float32))
+    perStepWeights = torch.tensor([1.6, 1.3, 1.0, 0.8, 0.6, 0.5] + [0.4] * (predSteps - 6), dtype=torch.float32)  # Adjust for longer horizon
     auxDynWeight = 0.02
     teacherForcingStart = 0.9
     teacherForcingEnd = 0.0
     tfDecayEpochs = min(30, max(5, int(0.2 * numEpochs)))
 
-    bestValLoss = min(history["val_loss"]) if history["val_loss"] else float("inf")
+    bestValLoss = float("inf")
     epochsNoImprove = 0
     trainingStartTime = time.time()
     globalStep = 0
+
+    if resumeModelPath:
+        # Simulate scheduler steps to match resumed epoch
+        stepsPerEpoch = math.ceil(len(trainLoader) / gradAccumSteps)
+        globalStep = startEpoch * stepsPerEpoch
+        for _ in range(globalStep):
+            scheduler.step()
+        bestValLoss = min(history["val_loss"])
+        epochsNoImprove = len(history["val_loss"]) - history["val_loss"].index(bestValLoss) - 1
 
     for epoch in range(startEpoch, numEpochs):
         model.train()
@@ -401,7 +381,6 @@ def trainModel(
                     print(f"Labels: {labels}")
                     print(f"PrevImg stats: min={prevImg.min()}, max={prevImg.max()}, mean={prevImg.mean()}")
                     print(f"CurrentImg stats: min={currentImg.min()}, max={currentImg.max()}, mean={currentImg.mean()}")
-                    # Skip this batch or break
                     continue  # or break to stop training
                 
                 lossMain = trajectory_loss_with_weights(preds, labels, perStepWeights, reduction="mean")
@@ -417,7 +396,7 @@ def trainModel(
 
             if accumSteps == gradAccumSteps:
                 scaler.unscale_(optimizer)
-                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)  # Reduced from 5.0
+                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
                 scaler.step(optimizer)
                 scaler.update()
                 optimizer.zero_grad()
@@ -552,9 +531,9 @@ if __name__ == "__main__":
     patience = 15             # Early stopping patience (stop if no val improvement for this many epochs)
     batchSize = 12            # Number of samples per training batch (controls GPU memory usage)
     gradAccumSteps = 1        # Gradient accumulation steps (simulates larger effective batch if >1)
-    learningRate = 1e-4       # Reduced from 3e-4 to prevent instability
-    featDim = 256             # Feature dimension of encoder output (controls model width / capacity)
-    hiddenDim = 256           # Hidden size of the GRU decoder (affects model memory and temporal capacity)
+    learningRate = 5e-5       # Optimized for transformer stability
+    featDim = 512             # Feature dimension in the model
+    hiddenDim = 768           # Hidden dimension in the model
     useAuxDyn = False         # Whether to enable auxiliary dynamics head (speed/accel prediction)
     resumeModelPath = None    # Set to path like "training/run13/best_model.pth" to resume training
 

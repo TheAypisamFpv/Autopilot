@@ -1,4 +1,3 @@
-# CreateModel.py   (fixed – transformer memory dim mismatch)
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -32,26 +31,29 @@ class Residual(nn.Module):
 
 
 # -------------------------
-# Encoder – early fusion + skips + multi-scale + sinusoidal 2-D pos-emb
+# Encoder: deeper with more residuals for richer features
 # -------------------------
 class EarlyFusionEncoder(nn.Module):
     def __init__(self, featDim=256):
         super().__init__()
         self.stem = nn.Sequential(
-            ConvGNAct(6, 32, kernel=7, stride=2, padding=3),   # H/2
+            ConvGNAct(6, 32, kernel=7, stride=2, padding=3),  # H/2
             Residual(32),
-            ConvGNAct(32, 64, stride=2)                        # H/4
+            Residual(32),  # Added for depth
+            ConvGNAct(32, 64, stride=2)                       # H/4
         )
         self.layer1 = nn.Sequential(
             Residual(64),
-            ConvGNAct(64, 128, stride=2)                       # H/8
+            Residual(64),  # Added
+            ConvGNAct(64, 128, stride=2)                      # H/8
         )
         self.layer2 = nn.Sequential(
             Residual(128),
-            ConvGNAct(128, featDim, stride=1)                  # keep H/8
+            Residual(128),  # Added
+            ConvGNAct(128, featDim, stride=1)                 # keep H/8
         )
         self.skipProj = nn.Conv2d(64, featDim, kernel_size=1, bias=False)
-        self.fusion   = nn.Conv2d(featDim * 2, featDim, kernel_size=1, bias=False)
+        self.fusion = nn.Conv2d(featDim * 2, featDim, kernel_size=1, bias=False)
 
         # sinusoidal frequencies
         freqs = torch.pow(10000.0, -torch.arange(0, featDim // 4, dtype=torch.float32) / (featDim // 4))
@@ -76,8 +78,8 @@ class EarlyFusionEncoder(nn.Module):
         x = torch.cat([imgT, imgTm1], dim=1)
 
         xStem = self.stem(x)
-        xL1   = self.layer1(xStem)
-        xL2   = self.layer2(xL1)
+        xL1 = self.layer1(xStem)
+        xL2 = self.layer2(xL1)
 
         # skip from stem
         skip = F.interpolate(self.skipProj(xStem), size=xL2.shape[2:], mode='bilinear', align_corners=False)
@@ -99,17 +101,17 @@ class EarlyFusionEncoder(nn.Module):
 # Multi-head spatial attention
 # -------------------------
 class SpatialAttentionDecoder(nn.Module):
-    def __init__(self, featDim, hiddenDim, numHeads=4):
+    def __init__(self, featDim, hiddenDim, numHeads=8):
         super().__init__()
         self.multihead = nn.MultiheadAttention(
-            embed_dim=featDim, num_heads=numHeads, batch_first=True
+            embed_dim=featDim, num_heads=numHeads, batch_first=True, dropout=0.1
         )
         self.queryProj = nn.Linear(hiddenDim, featDim)
 
     def forward(self, featMap, query):
         B, C, H, W = featMap.shape
         kv = featMap.flatten(2).permute(0, 2, 1)          # (B,S,C)
-        q  = self.queryProj(query).unsqueeze(1)           # (B,1,C)
+        q = self.queryProj(query).unsqueeze(1)            # (B,1,C)
 
         attnOut, attnW = self.multihead(q, kv, kv)
         context = attnOut.squeeze(1)
@@ -119,30 +121,30 @@ class SpatialAttentionDecoder(nn.Module):
 
 
 # -------------------------
-# Transformer decoder – **memory projection added**
+# Transformer decoder: deeper, more heads, dropout for stability
 # -------------------------
 class TransformerDecoder(nn.Module):
     def __init__(self, featDim=256, hiddenDim=256, predSteps=12,
-                 numLayers=1, numHeads=4):
+                 numLayers=2, numHeads=8):
         super().__init__()
         self.predSteps = predSteps
         self.hiddenDim = hiddenDim
-        self.featDim   = featDim
+        self.featDim = featDim
 
         decLayer = nn.TransformerDecoderLayer(
             d_model=hiddenDim, nhead=numHeads,
-            dim_feedforward=hiddenDim * 2, batch_first=True, activation='gelu'
+            dim_feedforward=hiddenDim * 2, batch_first=True, activation='gelu', dropout=0.1
         )
         self.transformer = nn.TransformerDecoder(decLayer, num_layers=numLayers)
 
         self.attn = SpatialAttentionDecoder(featDim, hiddenDim, numHeads)
 
-        # **project flattened feature map → hiddenDim**
+        # project flattened feature map to hiddenDim
         self.memoryProj = nn.Linear(featDim, hiddenDim)
 
-        self.posEmb   = nn.Parameter(torch.randn(1, predSteps + 1, hiddenDim))
-        self.initEmb  = nn.Linear(2, hiddenDim)
-        self.outHead  = nn.Sequential(
+        self.posEmb = nn.Parameter(torch.randn(1, predSteps + 1, hiddenDim))
+        self.initEmb = nn.Linear(2, hiddenDim)
+        self.outHead = nn.Sequential(
             nn.Linear(hiddenDim, hiddenDim // 2),
             nn.ReLU(),
             nn.Linear(hiddenDim // 2, 2)
@@ -153,11 +155,11 @@ class TransformerDecoder(nn.Module):
         device = featMap.device
 
         # flatten + project to hiddenDim
-        memory = featMap.flatten(2).permute(0, 2, 1)          # (B,S,C)
-        memory = self.memoryProj(memory)                     # (B,S,hiddenDim)
+        memory = featMap.flatten(2).permute(0, 2, 1)  # (B,S,C)
+        memory = self.memoryProj(memory)              # (B,S,hiddenDim)
 
         xy = torch.zeros(B, 2, device=device)
-        seqEmb = self.initEmb(xy).unsqueeze(1)               # (B,1,hidden)
+        seqEmb = self.initEmb(xy).unsqueeze(1)        # (B,1,hidden)
 
         preds, attnMaps = [], []
 
@@ -197,7 +199,7 @@ class TransformerDecoder(nn.Module):
 # Full model
 # -------------------------
 class TrajectoryModel(nn.Module):
-    def __init__(self, featDim=256, hiddenDim=256, predSteps=12, useAuxDyn=False, intervalSeconds=0.1):
+    def __init__(self, featDim=256, hiddenDim=256, predSteps=12, useAuxDyn=False, intervalSeconds=0.25):
         super().__init__()
         self.encoder = EarlyFusionEncoder(featDim=featDim)
         self.decoder = TransformerDecoder(
@@ -212,9 +214,9 @@ class TrajectoryModel(nn.Module):
                 nn.ReLU(),
                 nn.Linear(128, 4)
             )
-        self.name = "TrajectoryFusionTransformer_TFTV1"
+        self.name = "TrajectoryFusionTransformer_TFTV2"
 
-        # Input and output technicality specifications
+        # Input and output specs
         self.inputSpec = {
             'image_size': (360, 640),  # (height, width)
             'temporal_delay_seconds': 0.1  # Time delay between previous and current images
@@ -241,7 +243,7 @@ if __name__ == "__main__":
     img1 = torch.randn(B, 3, 360, 640)
     img2 = torch.randn(B, 3, 360, 640)
 
-    model = TrajectoryModel(featDim=256, hiddenDim=512, predSteps=12, useAuxDyn=True)
+    model = TrajectoryModel(featDim=512, hiddenDim=768, predSteps=12, useAuxDyn=False)
     model.eval()
 
     with torch.no_grad():
