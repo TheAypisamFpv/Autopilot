@@ -224,7 +224,7 @@ def runModel(modelPath, videoPath, temporalContextTimeWindow=0.1):
         featDim = trainingParams.get('featDim', 512)
         hiddenDim = trainingParams.get('hiddenDim', 1024)
         predSteps = trainingParams.get('predSteps', 12)
-        intervalSeconds = trainingParams.get('intervalSeconds', 0.1)
+        intervalSeconds = trainingParams.get('intervalSeconds', 0.25)
         
         # check if the model name in the params matches what's in CreateModel.py
         modelName = trainingParams.get('modelName', 'unknown_model')
@@ -246,8 +246,8 @@ def runModel(modelPath, videoPath, temporalContextTimeWindow=0.1):
 
     # Get specs from model or use defaults
     predSteps = model.outputSpec.get('num_vectors', 12) if hasattr(model, 'outputSpec') else 12
-    interval = model.outputSpec.get('intervalSeconds', 0.1) if hasattr(model, 'outputSpec') else intervalSeconds
-    inputImageSize = model.inputSpec.get('image_size', (360, 640)) if hasattr(model, 'inputSpec') else (360, 640)
+    interval = model.outputSpec.get('intervalSeconds', 0.25) if hasattr(model, 'outputSpec') else intervalSeconds
+    inputImageSize = model.inputSpec.get('image_size', (270, 480)) if hasattr(model, 'inputSpec') else (270, 480)
 
     print(f"\nModel specs - Input Size: {inputImageSize} -> Output PredSteps: {predSteps}, Interval: {interval}s\n")
 
@@ -523,6 +523,6 @@ if __name__ == '__main__':
     USEGPU = False
     
     
-    modelPath = r"C:\Users\Aypisam\Documents\VS_Python_Project\Autopilot\training\run15\best_model.pth"
+    modelPath = r"C:\Users\Aypisam\Documents\VS_Python_Project\Autopilot\training\run16\best_model.pth"
     videoPath = r"C:\Users\Aypisam\Documents\VS_Python_Project\Autopilot\test_drive\2025.06.24\GP065969.MP4"
     runModel(modelPath, videoPath)
