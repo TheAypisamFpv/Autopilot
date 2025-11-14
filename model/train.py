@@ -529,10 +529,10 @@ if __name__ == "__main__":
     datasetMaxSize = None     # Maximum number of samples to load from the dataset (None = use all available)
     numEpochs = 150           # Total number of training epochs (full passes through the dataset)
     patience = 15             # Early stopping patience (stop if no val improvement for this many epochs)
-    batchSize = 12            # Number of samples per training batch (controls GPU memory usage)
+    batchSize = 8             # Number of samples per training batch (controls GPU memory usage)
     gradAccumSteps = 1        # Gradient accumulation steps (simulates larger effective batch if >1)
     learningRate = 5e-5       # Optimized for transformer stability
-    featDim = 512             # Feature dimension in the model
+    featDim = 256             # Feature dimension in the model
     hiddenDim = 512           # Hidden dimension in the model
     useAuxDyn = False         # Whether to enable auxiliary dynamics head (speed/accel prediction)
     resumeModelPath = None    # Set to path like "training/run13/best_model.pth" to resume training
