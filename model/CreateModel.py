@@ -116,7 +116,7 @@ class AttentiveGRUDecoder(nn.Module):
             nn.Linear(hidden_dim//2, 2)   # predict delta x,y for next step
         )
 
-    def forward(self, feat_map, teacher_forcing=False, gt_traj=None, tf_ratio=0.9):
+    def forward(self, feat_map, teacherForcing=False, gtTraj=None, tfRatio=0.9):
         # feat_map: (B, C, H, W)
         B = feat_map.size(0)
         device = feat_map.device
@@ -135,8 +135,8 @@ class AttentiveGRUDecoder(nn.Module):
             preds.append(next_xy.unsqueeze(1))
             attn_maps.append(attn_map)
             # teacher forcing option (if gt_traj provided)
-            if teacher_forcing and gt_traj is not None and torch.rand(1).item() < tf_ratio:
-                prev_xy = gt_traj[:, t, :].detach()                 # feed GT
+            if teacherForcing and gtTraj is not None and torch.rand(1).item() < tfRatio:
+                prev_xy = gtTraj[:, t, :].detach()                 # feed GT
             else:
                 prev_xy = next_xy.detach()
         preds = torch.cat(preds, dim=1)  # (B, T, 2)
@@ -172,9 +172,9 @@ class TrajectoryModel(nn.Module):
             'intervalSeconds': intervalSeconds  # Time interval between each predicted vector
         }
 
-    def forward(self, img_t, img_tm1, gt_traj=None, teacher_forcing=False, tf_ratio=0.9):
+    def forward(self, img_t, img_tm1, gtTraj=None, teacherForcing=False, tfRatio=0.9):
         fmap = self.encoder(img_t, img_tm1)
-        preds, attn_maps = self.decoder(fmap, teacher_forcing=teacher_forcing, gt_traj=gt_traj, tf_ratio=tf_ratio)
+        preds, attn_maps = self.decoder(fmap, teacherForcing=teacherForcing, gtTraj=gtTraj, tfRatio=tfRatio)
         aux = None
         if self.use_aux_dyn:
             aux = self.aux(fmap)
