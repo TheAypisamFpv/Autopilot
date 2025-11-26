@@ -1,0 +1,1 @@
+- Fix training & validating progress bar losses values
