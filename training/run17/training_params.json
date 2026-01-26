@@ -1,0 +1,17 @@
+{
+    "datasetDir": "D:\\VS_Python_Project\\Autopilot\\Autopilot\\dataset\\output_12_3.0_0.1_framesize640x360_balanced",
+    "numEpochs": 150,
+    "batchSize": 24,
+    "learningRate": 5e-05,
+    "trainValSplit": 0.8,
+    "patience": 15,
+    "datasetMaxSize": null,
+    "gradAccumSteps": 1,
+    "useAuxDyn": false,
+    "featDim": 256,
+    "hiddenDim": 512,
+    "predSteps": 12,
+    "intervalSeconds": 0.25,
+    "deviceOverride": null,
+    "modelName": "TrajectoryModel_EarlyFusion_AttentiveGRU_V2"
+}

@@ -520,9 +520,9 @@ if __name__ == '__main__':
     DOWNSCALE = 2
     SHOWATTENTION = True
     SHOWORIGINALTRAJ = True
-    USEGPU = False
+    USEGPU = True
     
     
-    modelPath = r"C:\Users\Aypisam\Documents\VS_Python_Project\Autopilot\training\run16\best_model.pth"
-    videoPath = r"C:\Users\Aypisam\Documents\VS_Python_Project\Autopilot\test_drive\2025.06.24\GP065969.MP4"
+    modelPath = r"D:\VS_Python_Project\Autopilot\Autopilot\training\run17\best_model.pth"
+    videoPath = r"D:\VS_Python_Project\Autopilot\Autopilot\Test_drive\2025\2025.06.24\GP065969.MP4"
     runModel(modelPath, videoPath)

@@ -13,6 +13,7 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import json
+import random
 
 from CreateModel import TrajectoryModel
 from progressBar import getProgressBar
@@ -202,6 +203,17 @@ def trainModel(
         resumeModelPath (str or None): Path to a previously trained model to resume training from.
     """
     print()
+    
+    # Set fixed random seed for reproducibility
+    seed = 42
+    torch.manual_seed(seed)
+    random.seed(seed)
+    np.random.seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
     
     if not os.path.exists(datasetDir):
         raise FileNotFoundError(f"Dataset directory '{datasetDir}' does not exist.")
@@ -423,7 +435,7 @@ def trainModel(
 
             avgLoss = runningLoss / ((i + 1) * batchSize)
             print(f"{getProgressBar(completion, wheelIndex=i, maxbarLength=75)}"
-                  f"Avg Train Loss: {avgLoss:.4f} - ETA: {etaTime} - Time: {elapsedFmt}", end="\r")
+                  f"Avg Train Loss: {avgLoss/batchesDone:.4f} - ETA: {etaTime} - Time: {elapsedFmt}", end="\r")
 
         trainLoss = runningLoss / len(trainLoader.dataset)
         trainADE = runningADE / len(trainLoader.dataset)
@@ -463,7 +475,7 @@ def trainModel(
                 valEtaFinish = datetime.fromtimestamp(time.time() + valEta)
                 valEtaTime = valEtaFinish.strftime("%Y-%m-%d %H:%M:%S")
                 print(f"{getProgressBar(completion, wheelIndex=i, maxbarLength=75)}"
-                    f"Avg Val Loss: {valLoss/((i+1)*labels.size(0)):.4f} (best: {bestValLoss:.4f})"
+                    f"Avg Val Loss: {valLoss/batchesDone:.4f} (best: {bestValLoss:.4f})"
                     f" - ETA: {valEtaTime}", end="\r")
 
         valLoss /= len(valLoader.dataset)
@@ -535,7 +547,7 @@ if __name__ == "__main__":
     featDim = 256             # Feature dimension in the model
     hiddenDim = 512           # Hidden dimension in the model
     useAuxDyn = False         # Whether to enable auxiliary dynamics head (speed/accel prediction)
-    resumeModelPath = None    # Set to path like "training/run13/best_model.pth" to resume training
+    resumeModelPath = "D:/VS_Python_Project/Autopilot/Autopilot/training/run17/best_model.pth"    # Set to path like "training/run13/best_model.pth" to resume training
 
     trainModel(
         datasetDir=datasetPath,
