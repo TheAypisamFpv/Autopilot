@@ -2,6 +2,8 @@
 
 An advanced vehicle trajectory prediction system leveraging deep learning to forecast vehicle path over a 3-second horizon from visual input.
 
+<a href="https://x.com/THEAYPISAMFPV/status/1982888965666681123">View the video demonstration on 𝕏</a>
+
 
 ## Overview
 
