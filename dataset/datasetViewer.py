@@ -160,5 +160,5 @@ def viewRandomItem(datasetDir):
     cv2.destroyAllWindows()
 
 if __name__ == "__main__":
-    datasetOutputDir = r"D:\VS_Python_Project\Autopilot\Autopilot\dataset\output"
+    datasetOutputDir = r"D:\VS_Python_Project\Autopilot\Autopilot\dataset\NVIDIA_output_12_3.0_0.1_framesize640x360"
     viewRandomItem(datasetOutputDir)

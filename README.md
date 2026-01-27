@@ -1,19 +1,18 @@
 # Custom Multi-Modal
 
-An advanced vehicle trajectory prediction system leveraging deep learning to forecast vehicle path over a 3-second horizon based on visual input and GPS data.
+An advanced vehicle trajectory prediction system leveraging deep learning to forecast vehicle path over a 3-second horizon from visual input.
 
 
 ## Overview
 
-This project implements a multi-modal network that predicts the future trajectory of the vehicle using:
-- 2 RGB images from a front-facing GoPro camera (480x270 pixels, both images are separated by a 0.1s time interval for temporal context)
-- Vehicle speed (m/s) derived from GPS data
+This project implements a vision-based network that predicts the future trajectory of the vehicle using:
+- 2 RGB images from a front-facing camera (360x640 pixels, both images are separated by a 0.1s time interval for temporal context)
 
-The model outputs 6 two-dimensional vectors representing the predicted travel path (x, y) in the 2D road plane over a 3-second interval.
+The model outputs 12 two-dimensional vectors representing the predicted travel path (x, y) in the 2D road plane over a 3-second interval (0.25s per vector).
 
 ## Data Visualization
 
-The following visualization shows an example of processed GPS data used for training and evaluation:
+The following visualization shows an example of processed GPS data used in the legacy GoPro + GPS dataset for training and evaluation:
 
 ![GPS Data Visualization](images/visualization/dataVis.png)
 
@@ -34,10 +33,20 @@ To generate a PDF from the LaTeX file, compile `model_architecture.tex` with a L
 
 ## Dataset
 
-The dataset consists of processed frames from .mp4 video files captured with a GoPro Hero 5 camera, paired its GPS data. The data generation process involves:
+### New way (NVIDIA PhysicalAI-Autonomous-Vehicles)
+
+The current recommended dataset source is NVIDIA’s PhysicalAI-Autonomous-Vehicles dataset:
+https://huggingface.co/datasets/nvidia/PhysicalAI-Autonomous-Vehicles
+
+**License/Terms of Use:** This dataset is governed by the NVIDIA Autonomous Vehicle Dataset License Agreement. You must accept the terms on the dataset page before downloading or using it. Do not redistribute the dataset or derivatives, and comply with all restrictions in the license:
+https://huggingface.co/datasets/nvidia/PhysicalAI-Autonomous-Vehicles/blob/main/LICENSE.pdf
+
+### Old way (GoPro + GPS)
+
+The original dataset consists of processed frames from .mp4 video files captured with a GoPro Hero 5 camera, paired with its GPS data. The data generation process involves:
 
 1. Extracting GPS data (position, speed, timestamps) from the GoPro's metadata
-2. Processing video frames at specific intervals (480x270 pixel resolution)
+2. Processing video frames at specific intervals (640x360 pixel resolution)
 3. For each frame pair:
    - Two consecutive frames separated by 0.1 seconds are extracted
    - GPS data is validated for accuracy (fix type 3* and accuracy < 3.0m)
@@ -63,7 +72,7 @@ The generated dataset is over 130Go with 432501 datapoints.
 |:---:|:---:|:---:|
 | ![Roundabout Entry](images/dataset/dataset_exemple_roundaboutEnter.png) | ![In Roundabout](images/dataset/dataset_exemple_inRoundabout.png) | ![Roundabout Exit](images/dataset/dataset_exemple_roundaboutExit.png) |
 
-Each sample in the dataset includes the image pair, current speed, and the ground truth trajectory vectors representing the vehicle's future path.
+Each sample in the dataset includes the image pair and the ground truth trajectory vectors representing the vehicle's future path. (Legacy records may include speed metadata, but the current model is vision-only.)
 
 ## Training
 
@@ -78,7 +87,7 @@ The new architecture reduced parameters from 23M to 8.8M while achieving better 
 
 Check out a video demonstration of the model in action (at epoch 19):
 
-<a href="https://x.com/THEAYPISAMFPV/status/1982888965666681123">View the video demonstration on X</a>
+<a href="https://x.com/THEAYPISAMFPV/status/1982888965666681123">View the video demonstration on 𝕏</a>
 
 ## Q&A
 

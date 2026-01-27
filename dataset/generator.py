@@ -5,6 +5,7 @@ from matplotlib.dates import FR
 import numpy as np
 import os
 import math
+import pyarrow.parquet as pq
 from datetime import datetime, timedelta
 from typing import List, Tuple, Dict, Any
 
@@ -35,6 +36,184 @@ def loadGpsData(jsonPath: str) -> List[Dict[str, Any]]:
     except Exception as e:
         print(f"\nError loading GPS data: {e}")
         return []
+
+
+def loadEgomotionParquet(parquetPath: str) -> Dict[str, np.ndarray]:
+    """
+    Load egomotion data from a parquet file into numpy arrays.
+
+    Args:
+        parquetPath: Path to the egomotion parquet file
+
+    Returns:
+        Dictionary of numpy arrays for each egomotion column
+    """
+    table = pq.read_table(parquetPath)
+    data = {name: table.column(name).to_numpy() for name in table.schema.names}
+    return data
+
+
+def loadCameraTimestampsParquet(parquetPath: str) -> np.ndarray:
+    """
+    Load camera frame timestamps from parquet.
+
+    Args:
+        parquetPath: Path to the camera timestamps parquet
+
+    Returns:
+        Numpy array where index = frame_index and value = timestamp (int64)
+    """
+    table = pq.read_table(parquetPath)
+    frame_index = table.column('frame_index').to_numpy()
+    timestamp = table.column('timestamp').to_numpy()
+
+    max_index = int(frame_index.max()) if len(frame_index) else -1
+    timestamps_by_frame = np.full(max_index + 1, np.iinfo(np.int64).min, dtype=np.int64)
+    timestamps_by_frame[frame_index] = timestamp
+    return timestamps_by_frame
+
+
+def getYawFromQuaternion(qx: float, qy: float, qz: float, qw: float) -> float:
+    """
+    Compute yaw (heading) in radians from a quaternion.
+    """
+    sinyCosp = 2.0 * (qw * qz + qx * qy)
+    cosyCosp = 1.0 - 2.0 * (qy * qy + qz * qz)
+    return math.atan2(sinyCosp, cosyCosp)
+
+
+
+def findClosestIndex(timestamps: np.ndarray, target: int) -> int:
+    """
+    Find index of closest timestamp to target using binary search.
+    """
+    if len(timestamps) == 0:
+        return -1
+    idx = int(np.searchsorted(timestamps, target))
+    if idx <= 0:
+        return 0
+    if idx >= len(timestamps):
+        return len(timestamps) - 1
+
+    before = timestamps[idx - 1]
+    after = timestamps[idx]
+    if abs(target - before) <= abs(after - target):
+        return idx - 1
+    return idx
+
+
+def interpolateEgomotionState(egoData: Dict[str, np.ndarray], targetTimeUs: int) -> Dict[str, float]:
+    """
+    Linearly interpolate egomotion state at a target timestamp.
+    Quaternion is interpolated with normalized lerp (nlerp).
+    """
+    timestamps = egoData['timestamp']
+    if len(timestamps) < 2:
+        return None
+
+    idx = int(np.searchsorted(timestamps, targetTimeUs))
+    if idx <= 0 or idx >= len(timestamps):
+        return None
+
+    t0 = int(timestamps[idx - 1])
+    t1 = int(timestamps[idx])
+    if t1 == t0:
+        alpha = 0.0
+    else:
+        alpha = (targetTimeUs - t0) / float(t1 - t0)
+
+    def lerp(a: float, b: float) -> float:
+        return (1.0 - alpha) * a + alpha * b
+
+    q0 = np.array([
+        float(egoData['qx'][idx - 1]),
+        float(egoData['qy'][idx - 1]),
+        float(egoData['qz'][idx - 1]),
+        float(egoData['qw'][idx - 1]),
+    ])
+    q1 = np.array([
+        float(egoData['qx'][idx]),
+        float(egoData['qy'][idx]),
+        float(egoData['qz'][idx]),
+        float(egoData['qw'][idx]),
+    ])
+
+    q = (1.0 - alpha) * q0 + alpha * q1
+    norm = float(np.linalg.norm(q))
+    if norm > 0:
+        q = q / norm
+    else:
+        q = q0
+
+    return {
+        'timestamp': float(targetTimeUs),
+        'x': lerp(float(egoData['x'][idx - 1]), float(egoData['x'][idx])),
+        'y': lerp(float(egoData['y'][idx - 1]), float(egoData['y'][idx])),
+        'z': lerp(float(egoData['z'][idx - 1]), float(egoData['z'][idx])),
+        'vx': lerp(float(egoData['vx'][idx - 1]), float(egoData['vx'][idx])),
+        'vy': lerp(float(egoData['vy'][idx - 1]), float(egoData['vy'][idx])),
+        'vz': lerp(float(egoData['vz'][idx - 1]), float(egoData['vz'][idx])),
+        'ax': lerp(float(egoData['ax'][idx - 1]), float(egoData['ax'][idx])),
+        'ay': lerp(float(egoData['ay'][idx - 1]), float(egoData['ay'][idx])),
+        'az': lerp(float(egoData['az'][idx - 1]), float(egoData['az'][idx])),
+        'curvature': lerp(float(egoData['curvature'][idx - 1]), float(egoData['curvature'][idx])),
+        'qx': float(q[0]),
+        'qy': float(q[1]),
+        'qz': float(q[2]),
+        'qw': float(q[3]),
+    }
+
+
+def calculateFutureTrajectoryEgomotion(
+    egoData: Dict[str, np.ndarray],
+    currentTimeUs: int,
+    targetTimesUs: List[int]
+) -> List[Dict[str, Any]]:
+    """
+    Calculate future trajectory vectors from egomotion data.
+    Vectors are incremental displacements between successive future points.
+    """
+    trajectoryVectors: List[Dict[str, Any]] = []
+
+    currentState = interpolateEgomotionState(egoData, int(currentTimeUs))
+    if currentState is None:
+        return [None for _ in targetTimesUs]
+
+    yaw = getYawFromQuaternion(currentState['qx'], currentState['qy'], currentState['qz'], currentState['qw'])
+    currentX = currentState['x']
+    currentY = currentState['y']
+    current_ts = int(currentTimeUs)
+    prevTimeUs = int(currentTimeUs)
+
+    for targetTime in targetTimesUs:
+        futureState = interpolateEgomotionState(egoData, int(targetTime))
+        if futureState is None:
+            trajectoryVectors.append(None)
+            prevTimeUs = int(targetTime)
+            continue
+
+        futureX = futureState['x']
+        futureY = futureState['y']
+
+        dxWorld = futureX - currentX
+        dyWorld = futureY - currentY
+
+        forward = dxWorld * math.cos(yaw) + dyWorld * math.sin(yaw)
+        right = dxWorld * math.sin(yaw) - dyWorld * math.cos(yaw)
+
+        timeDiff = (int(targetTime) - current_ts) / 1e6
+
+        trajectoryVectors.append({
+            'time': timeDiff,
+            'x': right,  # lateral displacement (right)
+            'y': forward,  # longitudinal displacement (forward)
+        })
+
+        currentX = futureX
+        currentY = futureY
+        prevTimeUs = int(targetTime)
+
+    return trajectoryVectors
 
 def findFutureGpsPoints(gpsData: List[Dict[str, Any]], currentFrameTime: datetime, duration: float = 3.0, interval: float = 0.5) -> List[Dict[str, Any]]:
     """
@@ -394,7 +573,17 @@ def saveDatasetItem(outputDir: str, index: int, prevFrame: np.ndarray, currentFr
         f.write(f"turnRate : {turnRate:.3f}\n")
 
 
-def visualizeFutureTrajectory(frame: np.ndarray, previousFrame: np.ndarray, vectors: List[Dict[str, Any]], speed: float, acceleration: float, turnRate: float, frameParams: Dict[str, float]):
+def visualizeFutureTrajectory(
+    frame: np.ndarray,
+    previousFrame: np.ndarray,
+    vectors: List[Dict[str, Any]],
+    speed: float,
+    acceleration: float,
+    turnRate: float,
+    frameParams: Dict[str, float],
+    worldPos: Tuple[float, float, float] = None,
+    worldVel: Tuple[float, float, float] = None
+):
     """
     Visualize the future trajectory on the given frame.
 
@@ -406,9 +595,11 @@ def visualizeFutureTrajectory(frame: np.ndarray, previousFrame: np.ndarray, vect
         acceleration: Current acceleration in m/s².
         turnRate: Current turn rate in deg/s.
         frameParams: Dictionary containing randomized parameters for the frame.
+        worldPos: Optional world position (x, y, z) in meters.
+        worldVel: Optional world velocity (vx, vy, vz) in m/s.
     """
 
-    if not frame.all() or not previousFrame.all():
+    if frame is None or previousFrame is None:
         print("No frame or previous frame to visualize.")
         return
 
@@ -425,26 +616,40 @@ def visualizeFutureTrajectory(frame: np.ndarray, previousFrame: np.ndarray, vect
 
     originPoint = (currentFrame.shape[1] // 2, currentFrame.shape[0] -5)  # Center of the frame
 
-    vecToPixel = 3
+    vecToPixel = 5
     vectorThickness = 2
 
     colorBlend = 255 / len(vectors)
 
+    textColor = (255, 255, 255)
     cv2.line(currentFrame, originPoint, (originPoint[0]+100, originPoint[1]), (0, 0, 0), 1, cv2.LINE_AA)
     cv2.putText(currentFrame, f"0.00s",
                     (originPoint[0] + 10, originPoint[1] - 5), 
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1, cv2.LINE_AA)
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, textColor, 1, cv2.LINE_AA)
 
     cv2.putText(currentFrame, f"speed = {speed:.1f} m.s-1",
                     (10, 15), 
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1, cv2.LINE_AA)
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, textColor, 1, cv2.LINE_AA)
     cv2.putText(currentFrame, f"acc = {acceleration:.1f} m.s-2",
                     (10, 35), 
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1, cv2.LINE_AA)
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, textColor, 1, cv2.LINE_AA)
     cv2.putText(currentFrame, f"turnRate = {turnRate:.1f} deg.s-1",
                     (10, 55), 
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1, cv2.LINE_AA)
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, textColor, 1, cv2.LINE_AA)
 
+    infoY = 75
+    if worldPos is not None:
+        cv2.putText(currentFrame, f"pos = ({worldPos[0]:.2f}, {worldPos[1]:.2f}, {worldPos[2]:.2f}) m",
+                        (10, infoY),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, textColor, 1, cv2.LINE_AA)
+        infoY += 20
+
+    if worldVel is not None:
+        cv2.putText(currentFrame, f"vel = ({worldVel[0]:.2f}, {worldVel[1]:.2f}, {worldVel[2]:.2f}) m/s",
+                        (10, infoY),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, textColor, 1, cv2.LINE_AA)
+
+    vectorLengths = []
     for i, vector in enumerate(vectors):
         if vector is None:
             continue
@@ -452,6 +657,9 @@ def visualizeFutureTrajectory(frame: np.ndarray, previousFrame: np.ndarray, vect
         # Calculate the end point of the vector
         endX = int(originPoint[0] + vector['x'] * vecToPixel)
         endY = int(originPoint[1] - vector['y'] * vecToPixel)
+
+        vectorLength = math.sqrt(vector['x'] * vector['x'] + vector['y'] * vector['y'])
+        vectorLengths.append(vectorLength)
 
         # Draw the vector
         cv2.line(currentFrame, originPoint, (endX, endY), (255 - i*colorBlend, 0, i*colorBlend), vectorThickness, cv2.LINE_AA)
@@ -463,13 +671,23 @@ def visualizeFutureTrajectory(frame: np.ndarray, previousFrame: np.ndarray, vect
             cv2.line(currentFrame, originPoint, (originPoint[0]+100, originPoint[1]), (0, 0, 0), 1, cv2.LINE_AA)
             cv2.putText(currentFrame, f"{vector['time']:.2f}s",
                         (originPoint[0] + 10, originPoint[1] - 5),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1, cv2.LINE_AA)
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, textColor, 1, cv2.LINE_AA)
         else:
             # Draw on left
             cv2.line(currentFrame, originPoint, (originPoint[0]-100, originPoint[1]), (0, 0, 0), 1, cv2.LINE_AA)
             cv2.putText(currentFrame, f"{vector['time']:.2f}s",
                         (originPoint[0] - 100, originPoint[1] - 5),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1, cv2.LINE_AA)
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, textColor, 1, cv2.LINE_AA)
+
+    if vectorLengths:
+        reversedLengths = list(reversed(vectorLengths))
+        startY = currentFrame.shape[0] - 20 - (len(reversedLengths) * 14)
+        totalCount = len(reversedLengths)
+        for idx, length in enumerate(reversedLengths, start=1):
+            labelIndex = totalCount - idx + 1
+            cv2.putText(currentFrame, f"L{labelIndex}: {length:.2f}m",
+                        (10, startY + (idx - 1) * 14),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.4, textColor, 1, cv2.LINE_AA)
 
     # show both image (previous on the left, current on the right) on the same window
     combinedFrame = np.hstack((previousFrame, currentFrame))
@@ -671,6 +889,176 @@ def generateDataset(
     return datasetIndex  # Return the last index used for further processing if needed
 
 
+def generateDatasetNvidiaClip(
+    clipUuid: str,
+    cameraDir: str,
+    egomotionDir: str,
+    outputDir: str,
+    imageSize: Tuple[int, int],
+    frameInterval: int,
+    startIndex: int,
+    vectorsNumbers: int,
+    vectorTimeWindow: float,
+    temporalContextTimeWindow: float,
+    DEBUGVIZ: bool = False
+) -> int:
+    """
+    Generate dataset from NVIDIA egomotion and camera clips.
+
+    Args:
+        clipUuid: Clip UUID used in filenames
+        cameraDir: Directory containing camera mp4 and timestamps parquet
+        egomotionDir: Directory containing egomotion parquet
+        outputDir: Directory to save the generated dataset
+        imageSize: Size to resize frames to (width, height)
+        frameInterval: Interval in seconds to skip frames
+        startIndex: Starting index for dataset items
+        vectorsNumbers: Number of future trajectory vectors to generate
+        vectorTimeWindow: Time window in seconds for each vector
+        temporalContextTimeWindow: Time window in seconds for temporal context
+        DEBUGVIZ: Whether to visualize the future trajectory
+
+    Returns:
+        Updated dataset index
+    """
+    cameraVideoPath = os.path.join(cameraDir, f"{clipUuid}.camera_front_wide_120fov.mp4")
+    cameraTimestampsPath = os.path.join(cameraDir, f"{clipUuid}.camera_front_wide_120fov.timestamps.parquet")
+    egomotionPath = os.path.join(egomotionDir, f"{clipUuid}.egomotion.parquet")
+
+    if not os.path.exists(cameraVideoPath) or not os.path.exists(cameraTimestampsPath) or not os.path.exists(egomotionPath):
+        print(f"Skipping {clipUuid}: missing camera or egomotion files.")
+        return startIndex
+
+    egoData = loadEgomotionParquet(egomotionPath)
+    frameTimestamps = loadCameraTimestampsParquet(cameraTimestampsPath)
+
+    if len(frameTimestamps) == 0:
+        print(f"Skipping {clipUuid}: empty camera timestamps.")
+        return startIndex
+
+    cap = cv2.VideoCapture(cameraVideoPath, cv2.CAP_MSMF)
+    if not cap.isOpened():
+        print("Error: Could not open video with MSMF backend, trying default...")
+        cap = cv2.VideoCapture(cameraVideoPath)
+        if not cap.isOpened():
+            print(f"Error: Could not open video for clip {clipUuid}.")
+            return startIndex
+
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    if fps == 0:
+        print("Warning: Could not get FPS from video. Defaulting to 30.")
+        fps = 30
+    else:
+        print(f"Video FPS: {fps}")
+
+    frameCount = 0
+    datasetIndex = startIndex
+    frameBuffer: List[np.ndarray] = []
+    frameBufferSize = max(int(fps * temporalContextTimeWindow), 2)
+
+    maxTimestampUs = int(frameTimestamps.max())
+    vectorTimeWindowUs = int(vectorTimeWindow * 1e6)
+    skipModulo = int(round(fps * frameInterval)) if frameInterval > 0 else 0
+
+    frameIndex = 0
+    while cap.isOpened():
+        ret, frame = cap.read()
+        if not ret:
+            break
+
+        if frameIndex >= len(frameTimestamps):
+            break
+
+        currentFrameTimestampUs = int(frameTimestamps[frameIndex])
+        if currentFrameTimestampUs == np.iinfo(np.int64).min:
+            frameIndex += 1
+            frameCount += 1
+            continue
+
+        if currentFrameTimestampUs >= (maxTimestampUs - vectorTimeWindowUs):
+            print(f"\nStopping generation {vectorTimeWindow}s before the end of the clip {clipUuid}.")
+            break
+
+        processedFrame = cv2.resize(frame, imageSize, interpolation=cv2.INTER_AREA)
+        frameParams = getRandomizeFrameParams(deltaExpo=0, deltaGamma=0, deltaBrightness=0, deltaContrast=0)
+
+        if skipModulo > 0 and frameCount % skipModulo != 0:
+            frameBuffer = []
+            frameCount += 1
+            frameIndex += 1
+            print(f"Skipping frame {frameCount:06d}                    ", end='\r')
+            continue
+
+        currentState = interpolateEgomotionState(egoData, currentFrameTimestampUs)
+        if currentState is None:
+            frameIndex += 1
+            frameCount += 1
+            continue
+
+        print(f"Processing frame {frameCount:06d} - {datasetIndex:06d}{' '*60}", end='\r')
+
+        if len(frameBuffer) < frameBufferSize:
+            frameBuffer.append(processedFrame)
+            frameCount += 1
+            frameIndex += 1
+            continue
+
+        previousFrame = frameBuffer[0]
+
+        intervalUs = int(vectorTimeWindowUs / vectorsNumbers)
+        targetTimesUs = [currentFrameTimestampUs + intervalUs * (i + 1) for i in range(vectorsNumbers)]
+
+        futureTrajectory = calculateFutureTrajectoryEgomotion(egoData, currentFrameTimestampUs, targetTimesUs)
+
+        vx = float(currentState['vx'])
+        vy = float(currentState['vy'])
+        speed = math.sqrt(vx * vx + vy * vy)
+
+        ax = float(currentState['ax'])
+        ay = float(currentState['ay'])
+        acceleration = math.sqrt(ax * ax + ay * ay)
+
+        curvature = float(currentState['curvature'])
+        turnRate = math.degrees(curvature * speed)
+
+        if DEBUGVIZ:
+            visualizeFutureTrajectory(
+                processedFrame,
+                previousFrame,
+                futureTrajectory,
+                speed,
+                acceleration,
+                turnRate,
+                frameParams,
+                worldPos=(currentState['x'], currentState['y'], currentState['z']),
+                worldVel=(currentState['vx'], currentState['vy'], currentState['vz'])
+            )
+
+        saveDatasetItem(
+            outputDir,
+            datasetIndex,
+            previousFrame,
+            processedFrame,
+            frameParams,
+            futureTrajectory,
+            speed,
+            acceleration,
+            turnRate
+        )
+
+        frameBuffer.append(processedFrame)
+        frameBuffer = frameBuffer[-frameBufferSize:]
+        datasetIndex += 1
+
+        frameCount += 1
+        frameIndex += 1
+
+    cap.release()
+    print(f"Dataset generation complete for {clipUuid}. Generated {datasetIndex - startIndex} items. {' '*10}\n")
+
+    return datasetIndex
+
+
 def main(
     Path: str,
     outputDir: str,
@@ -695,7 +1083,7 @@ def main(
     - manualStartIndex (int, optional): Starting index for dataset items, can be adjusted if resuming from a previous run.
     - DEBUGVIZ (bool, optional): Flag to enable debug visualization.
     """
-    outputDir = os.path.join(outputDir, f"output_{vectorsNumbers}_{vectorTimeWindow}_{temporalContextTimeWindow}_framesize{imageSize[0]}x{imageSize[1]}")
+    outputDir = os.path.join(outputDir, f"output_NVIDIA_{vectorsNumbers}_{vectorTimeWindow}_{temporalContextTimeWindow}_framesize{imageSize[0]}x{imageSize[1]}")
     startIndex = manualStartIndex if manualStartIndex is not False else 0
 
     # if that directory exists, add a number "(x)" at the end until a non-existing directory is found
@@ -710,15 +1098,39 @@ def main(
 
     # check if the provided path is a video file or a directory
     if os.path.isfile(Path):
-        # If it's a file, process it directly
+        # If it's a file, process it directly with the legacy GPS pipeline
         startIndex = generateDataset(Path, outputDir, imageSize, frameInterval, startIndex, vectorsNumbers, vectorTimeWindow, temporalContextTimeWindow, DEBUGVIZ=DEBUGVIZ)
     elif os.path.isdir(Path):
-        # If it's a directory, recursively process all MP4 files in it and subdirectories
-        for root, dirs, files in os.walk(Path):
-            for filename in files:
-                if filename.endswith('.MP4'):
-                    videoPath = os.path.join(root, filename)
-                    startIndex = generateDataset(videoPath, outputDir, imageSize, frameInterval, startIndex, vectorsNumbers, vectorTimeWindow, temporalContextTimeWindow, DEBUGVIZ=DEBUGVIZ)
+        cameraDir = os.path.join(Path, "camera", "camera_front_wide_120fov")
+        egomotionDir = os.path.join(Path, "labels", "egomotion")
+
+        if os.path.isdir(cameraDir) and os.path.isdir(egomotionDir):
+            # NVIDIA dataset structure
+            mp4Files = [f for f in os.listdir(cameraDir) if f.endswith(".camera_front_wide_120fov.mp4")]
+            mp4Files.sort()
+
+            for filename in mp4Files:
+                clipUuid = filename.split(".camera_front_wide_120fov.mp4")[0]
+                startIndex = generateDatasetNvidiaClip(
+                    clipUuid,
+                    cameraDir,
+                    egomotionDir,
+                    outputDir,
+                    imageSize,
+                    frameInterval,
+                    startIndex,
+                    vectorsNumbers,
+                    vectorTimeWindow,
+                    temporalContextTimeWindow,
+                    DEBUGVIZ=DEBUGVIZ
+                )
+        else:
+            # Legacy dataset structure: recursively process all MP4 files
+            for root, dirs, files in os.walk(Path):
+                for filename in files:
+                    if filename.endswith('.MP4'):
+                        videoPath = os.path.join(root, filename)
+                        startIndex = generateDataset(videoPath, outputDir, imageSize, frameInterval, startIndex, vectorsNumbers, vectorTimeWindow, temporalContextTimeWindow, DEBUGVIZ=DEBUGVIZ)
     else:
         print(f"Error: {Path} is neither a file nor a directory.")
 
@@ -727,8 +1139,8 @@ def main(
 
 
 if __name__ == "__main__":
-    videoPath = r"D:\VS_Python_Project\Autopilot\Autopilot\Test_drive\2025"
-    outputDir = r"D:\VS_Python_Project\Autopilot\Autopilot\dataset"
+    videoPath = r"F:\Projects\Autopiot\nvidia_dataset"
+    outputDir = r"F:\Projects\Autopiot\dataset_output"
     frameInterval = 0 # interval between each frame sample, in seconds
     imageSize = (640, 360)  # Width, Height
     vectorsNumbers = 12
