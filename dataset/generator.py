@@ -517,7 +517,8 @@ def applyFrameParams(frame: np.ndarray, frameParams: Dict[str, float]) -> np.nda
 
 
 def saveDatasetItem(outputDir: str, index: int, prevFrame: np.ndarray, currentFrame: np.ndarray, 
-                   frameParams: Dict[str, float], vectors: List[Dict[str, Any]], speed: float, acceleration: float, turnRate: float):
+                   frameParams: Dict[str, float], vectors: List[Dict[str, Any]], speed: float, acceleration: float, turnRate: float,
+                   saveImages: bool = True, videoPath: str = None, prevFrameIndex: int = None, currentFrameIndex: int = None):
     """
     Save dataset item (frames and metadata)
     
@@ -532,24 +533,24 @@ def saveDatasetItem(outputDir: str, index: int, prevFrame: np.ndarray, currentFr
         acceleration: Current acceleration in m/s²
         turnRate: Current turn rate in deg/s
     """
-    # Create directories if they don't exist
-    imagesDir = os.path.join(outputDir, "images")
-    os.makedirs(imagesDir, exist_ok=True)
-
     labelsDir = os.path.join(outputDir, "labels")
     os.makedirs(labelsDir, exist_ok=True)
     
-    # Save images
-    prevImagePath = os.path.join(imagesDir, f"{index:06d}_prev.png")
-    currentImagePath = os.path.join(imagesDir, f"{index:06d}_current.png")
+    if saveImages:
+        # Create directories if they don't exist
+        imagesDir = os.path.join(outputDir, "images")
+        os.makedirs(imagesDir, exist_ok=True)
 
-    # Apply frame parameters to the frames
-    prevFrame = applyFrameParams(prevFrame, frameParams)
-    currentFrame = applyFrameParams(currentFrame, frameParams)
+        # Save images
+        prevImagePath = os.path.join(imagesDir, f"{index:06d}_prev.png")
+        currentImagePath = os.path.join(imagesDir, f"{index:06d}_current.png")
 
-    
-    cv2.imwrite(prevImagePath, prevFrame)
-    cv2.imwrite(currentImagePath, currentFrame)
+        # Apply frame parameters to the frames
+        prevFrame = applyFrameParams(prevFrame, frameParams)
+        currentFrame = applyFrameParams(currentFrame, frameParams)
+
+        cv2.imwrite(prevImagePath, prevFrame)
+        cv2.imwrite(currentImagePath, currentFrame)
     
     # Filter out None vectors
     validVectors = [v for v in vectors if v is not None]
@@ -571,6 +572,12 @@ def saveDatasetItem(outputDir: str, index: int, prevFrame: np.ndarray, currentFr
         f.write(f"speed : {speed:.3f}\n")
         f.write(f"acceleration : {acceleration:.3f}\n")
         f.write(f"turnRate : {turnRate:.3f}\n")
+
+        # Optional video reference (labels-only mode)
+        if videoPath is not None and prevFrameIndex is not None and currentFrameIndex is not None:
+            f.write(f"video : {videoPath}\n")
+            f.write(f"prevFrameIndex : {prevFrameIndex}\n")
+            f.write(f"frameIndex : {currentFrameIndex}\n")
 
 
 def visualizeFutureTrajectory(
@@ -900,7 +907,8 @@ def generateDatasetNvidiaClip(
     vectorsNumbers: int,
     vectorTimeWindow: float,
     temporalContextTimeWindow: float,
-    DEBUGVIZ: bool = False
+    DEBUGVIZ: bool = False,
+    labelsOnly: bool = True
 ) -> int:
     """
     Generate dataset from NVIDIA egomotion and camera clips.
@@ -954,6 +962,7 @@ def generateDatasetNvidiaClip(
     frameCount = 0
     datasetIndex = startIndex
     frameBuffer: List[np.ndarray] = []
+    frameIndexBuffer: List[int] = []
     frameBufferSize = max(int(fps * temporalContextTimeWindow), 2)
 
     maxTimestampUs = int(frameTimestamps.max())
@@ -984,6 +993,7 @@ def generateDatasetNvidiaClip(
 
         if skipModulo > 0 and frameCount % skipModulo != 0:
             frameBuffer = []
+            frameIndexBuffer = []
             frameCount += 1
             frameIndex += 1
             print(f"Skipping frame {frameCount:06d}                    ", end='\r')
@@ -999,11 +1009,13 @@ def generateDatasetNvidiaClip(
 
         if len(frameBuffer) < frameBufferSize:
             frameBuffer.append(processedFrame)
+            frameIndexBuffer.append(frameIndex)
             frameCount += 1
             frameIndex += 1
             continue
 
         previousFrame = frameBuffer[0]
+        prevFrameIndex = frameIndexBuffer[0]
 
         intervalUs = int(vectorTimeWindowUs / vectorsNumbers)
         targetTimesUs = [currentFrameTimestampUs + intervalUs * (i + 1) for i in range(vectorsNumbers)]
@@ -1043,11 +1055,17 @@ def generateDatasetNvidiaClip(
             futureTrajectory,
             speed,
             acceleration,
-            turnRate
+            turnRate,
+            saveImages=not labelsOnly,
+            videoPath=cameraVideoPath if labelsOnly else None,
+            prevFrameIndex=prevFrameIndex if labelsOnly else None,
+            currentFrameIndex=frameIndex if labelsOnly else None
         )
 
         frameBuffer.append(processedFrame)
+        frameIndexBuffer.append(frameIndex)
         frameBuffer = frameBuffer[-frameBufferSize:]
+        frameIndexBuffer = frameIndexBuffer[-frameBufferSize:]
         datasetIndex += 1
 
         frameCount += 1
@@ -1068,7 +1086,8 @@ def main(
     vectorTimeWindow: float,
     temporalContextTimeWindow: float,
     manualStartIndex = False,
-    DEBUGVIZ:bool = False
+    DEBUGVIZ:bool = False,
+    labelsOnly: bool = True
     ):
     """
     Main function to generate dataset from a video file or directory of video files.
@@ -1122,7 +1141,8 @@ def main(
                     vectorsNumbers,
                     vectorTimeWindow,
                     temporalContextTimeWindow,
-                    DEBUGVIZ=DEBUGVIZ
+                    DEBUGVIZ=DEBUGVIZ,
+                    labelsOnly=labelsOnly
                 )
         else:
             # Legacy dataset structure: recursively process all MP4 files
@@ -1135,7 +1155,7 @@ def main(
         print(f"Error: {Path} is neither a file nor a directory.")
 
     print(f"Total dataset items generated: {startIndex}\n")
-    
+
 
 
 if __name__ == "__main__":

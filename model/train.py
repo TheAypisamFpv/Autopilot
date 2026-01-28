@@ -9,6 +9,7 @@ from torch.utils.data import Dataset, DataLoader, random_split
 from torchvision import transforms
 from torch.amp import GradScaler, autocast
 from PIL import Image
+import cv2
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -36,6 +37,18 @@ class DrivingDataset(Dataset):
         self.transform = transform
         self.predSteps = predSteps
         self.dtype = dtype
+        self.labelsOnly = False
+        self._video_cache = {}
+
+        if not os.path.exists(self.imagesDir):
+            self.labelsOnly = True
+        else:
+            try:
+                imageFiles = [f for f in os.listdir(self.imagesDir) if f.endswith(".png")]
+                if len(imageFiles) == 0:
+                    self.labelsOnly = True
+            except FileNotFoundError:
+                self.labelsOnly = True
 
         # Load all label indices
         allSamples = [f.split(".")[0] for f in os.listdir(self.labelsDir) if f.endswith(".txt")]
@@ -61,32 +74,82 @@ class DrivingDataset(Dataset):
             return min(len(self.samples), self.maxSize)
         return len(self.samples)
 
+    def _parse_label_file(self, labelPath):
+        vectors = None
+        speed = 0.0
+        videoPath = None
+        prevFrameIndex = None
+        frameIndex = None
+
+        with open(labelPath, "r") as f:
+            for line in f:
+                if line.startswith("vectors"):
+                    vectorsLine = line.strip().split(" : ")[1]
+                    if vectorsLine == "None":
+                        vectors = np.zeros((self.predSteps, 2), dtype=np.float32)
+                    else:
+                        vectorsList = [list(map(float, v.split(","))) for v in vectorsLine.split(" ")]
+                        while len(vectorsList) < self.predSteps:
+                            vectorsList.append([0.0, 0.0])
+                        vectors = np.array(vectorsList[:self.predSteps], dtype=np.float32)
+                elif line.startswith("speed"):
+                    speed = float(line.strip().split(" : ")[1])
+                elif line.startswith("video"):
+                    videoPath = line.strip().split(" : ", 1)[1]
+                elif line.startswith("prevFrameIndex"):
+                    prevFrameIndex = int(line.strip().split(" : ")[1])
+                elif line.startswith("frameIndex"):
+                    frameIndex = int(line.strip().split(" : ")[1])
+
+        if vectors is None:
+            vectors = np.zeros((self.predSteps, 2), dtype=np.float32)
+
+        return vectors, speed, videoPath, prevFrameIndex, frameIndex
+
+    def _get_video_capture(self, videoPath):
+        cap = self._video_cache.get(videoPath)
+        if cap is not None and cap.isOpened():
+            return cap
+
+        cap = cv2.VideoCapture(videoPath, cv2.CAP_MSMF)
+        if not cap.isOpened():
+            cap = cv2.VideoCapture(videoPath)
+        if cap.isOpened():
+            self._video_cache[videoPath] = cap
+            return cap
+        return None
+
+    def _read_frame_from_video(self, videoPath, frameIndex):
+        cap = self._get_video_capture(videoPath)
+        if cap is None:
+            return None
+        cap.set(cv2.CAP_PROP_POS_FRAMES, frameIndex)
+        ret, frame = cap.read()
+        if not ret:
+            return None
+        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        return Image.fromarray(frame)
+
     def __getitem__(self, idx):
         sampleId = self.samples[idx]
-        prevImgPath = os.path.join(self.imagesDir, f"{sampleId}_prev.png")
-        currentImgPath = os.path.join(self.imagesDir, f"{sampleId}_current.png")
+        labelPath = os.path.join(self.labelsDir, f"{sampleId}.txt")
+        vectors, speed, videoPath, prevFrameIndex, frameIndex = self._parse_label_file(labelPath)
 
-        prevImage = Image.open(prevImgPath).convert("RGB")
-        currentImage = Image.open(currentImgPath).convert("RGB")
+        if self.labelsOnly and videoPath is not None and prevFrameIndex is not None and frameIndex is not None:
+            prevImage = self._read_frame_from_video(videoPath, prevFrameIndex)
+            currentImage = self._read_frame_from_video(videoPath, frameIndex)
+            if prevImage is None or currentImage is None:
+                raise RuntimeError(f"Failed to read frames from video: {videoPath} ({prevFrameIndex}, {frameIndex})")
+        else:
+            prevImgPath = os.path.join(self.imagesDir, f"{sampleId}_prev.png")
+            currentImgPath = os.path.join(self.imagesDir, f"{sampleId}_current.png")
+            prevImage = Image.open(prevImgPath).convert("RGB")
+            currentImage = Image.open(currentImgPath).convert("RGB")
 
         if self.transform:
             prevImage = self.transform(prevImage)
             currentImage = self.transform(currentImage)
 
-        labelPath = os.path.join(self.labelsDir, f"{sampleId}.txt")
-        with open(labelPath, "r") as f:
-            lines = f.readlines()
-
-        vectorsLine = lines[0].strip().split(" : ")[1]
-        if vectorsLine == "None":
-            vectors = np.zeros((self.predSteps, 2), dtype=np.float32)
-        else:
-            vectorsList = [list(map(float, v.split(","))) for v in vectorsLine.split(" ")]
-            while len(vectorsList) < self.predSteps:
-                vectorsList.append([0.0, 0.0])
-            vectors = np.array(vectorsList[:self.predSteps], dtype=np.float32)
-
-        speed = float(lines[1].strip().split(" : ")[1])
         dynamicData = torch.tensor([speed], dtype=self.dtype)
 
         return prevImage, currentImage, dynamicData, torch.from_numpy(vectors).to(self.dtype)

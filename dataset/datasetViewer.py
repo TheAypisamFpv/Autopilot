@@ -48,6 +48,21 @@ def parseTurnRate(line):
         print(f"Error parsing turn rate line: {line.strip()} - {e}")
         return 0.0
 
+def getVideoFrame(videoPath, frameIndex):
+    cap = cv2.VideoCapture(videoPath, cv2.CAP_MSMF)
+    if not cap.isOpened():
+        cap = cv2.VideoCapture(videoPath)
+    if not cap.isOpened():
+        print(f"Could not open video: {videoPath}")
+        return None
+    cap.set(cv2.CAP_PROP_POS_FRAMES, frameIndex)
+    ret, frame = cap.read()
+    cap.release()
+    if not ret:
+        print(f"Failed to read frame {frameIndex} from {videoPath}")
+        return None
+    return frame
+
 def putTextWithOutline(frame, text, org, fontFace, fontScale, color, thickness=1):
     """Draws text with a black outline."""
     # Draw the outline in black
@@ -64,6 +79,10 @@ def viewRandomItem(datasetDir):
     """
     imagesDir = os.path.join(datasetDir, "images")
     labelsDir = os.path.join(datasetDir, "labels")
+
+    imagesize = tuple(datasetDir.split('framesize')[1].split('x'))
+    imagesize = int(imagesize[0]), int(imagesize[1])
+    print("imagesize: ", imagesize)
 
     if not os.path.exists(labelsDir):
         print(f"Labels directory not found at: {labelsDir}")
@@ -90,6 +109,9 @@ def viewRandomItem(datasetDir):
         # Read metadata
         vectors = []
         speed, acceleration, turnRate = 0, 0, 0
+        videoPath = None
+        prevFrameIndex = None
+        frameIndex = None
         with open(metadataPath, 'r') as f:
             for line in f:
                 if line.startswith('vectors'):
@@ -100,10 +122,22 @@ def viewRandomItem(datasetDir):
                     acceleration = parseAcceleration(line)
                 elif line.startswith('turnRate'):
                     turnRate = parseTurnRate(line)
+                elif line.startswith('video'):
+                    videoPath = line.split(' : ', 1)[1].strip()
+                elif line.startswith('prevFrameIndex'):
+                    prevFrameIndex = int(line.split(' : ')[1].strip())
+                elif line.startswith('frameIndex'):
+                    frameIndex = int(line.split(' : ')[1].strip())
 
         # Load images
-        prevFrame = cv2.imread(prevImagePath)
-        currentFrame = cv2.imread(currentImagePath)
+        if videoPath and prevFrameIndex is not None and frameIndex is not None:
+            prevFrame = cv2.resize(getVideoFrame(videoPath, prevFrameIndex), imagesize)
+
+            currentFrame = cv2.resize(getVideoFrame(videoPath, frameIndex), imagesize)
+
+        else:
+            prevFrame = cv2.imread(prevImagePath)
+            currentFrame = cv2.imread(currentImagePath)
 
         if prevFrame is None or currentFrame is None:
             print(f"Could not load images for {baseName}")
@@ -160,5 +194,5 @@ def viewRandomItem(datasetDir):
     cv2.destroyAllWindows()
 
 if __name__ == "__main__":
-    datasetOutputDir = r"D:\VS_Python_Project\Autopilot\Autopilot\dataset\NVIDIA_output_12_3.0_0.1_framesize640x360"
+    datasetOutputDir = r"D:\VS_Python_Project\Autopilot\Autopilot\dataset\output_NVIDIA_12_3.0_0.1_framesize640x360"
     viewRandomItem(datasetOutputDir)
