@@ -7,7 +7,9 @@ import os
 import math
 import pyarrow.parquet as pq
 from datetime import datetime, timedelta
-from typing import List, Tuple, Dict, Any
+from typing import List, Tuple, Dict, Any, Optional
+import multiprocessing as mp
+import time
 
 # Set environment variable to increase read attempts for potential network issues with large video files
 # os.environ['OPENCV_FFMPEG_READ_ATTEMPTS'] = '8192'
@@ -556,7 +558,16 @@ def saveDatasetItem(outputDir: str, index: int, prevFrame: np.ndarray, currentFr
     validVectors = [v for v in vectors if v is not None]
     
     # Create text file with metadata
-    metadataPath = os.path.join(labelsDir, f"{index:06d}.txt")
+    if videoPath is not None and currentFrameIndex is not None:
+        videoBase = os.path.basename(videoPath)
+        videoUuid = videoBase.split(".camera_front_wide_120fov.mp4")[0]
+        if videoUuid == videoBase:
+            videoUuid = os.path.splitext(videoBase)[0]
+        metadataFilename = f"{videoUuid}_{currentFrameIndex:06d}.txt"
+    else:
+        metadataFilename = f"{index:06d}.txt"
+
+    metadataPath = os.path.join(labelsDir, metadataFilename)
 
     with open(metadataPath, 'w') as f:
         # Write vectors
@@ -589,7 +600,8 @@ def visualizeFutureTrajectory(
     turnRate: float,
     frameParams: Dict[str, float],
     worldPos: Tuple[float, float, float] = None,
-    worldVel: Tuple[float, float, float] = None
+    worldVel: Tuple[float, float, float] = None,
+    windowName: str = "Future Trajectory Visualization"
 ):
     """
     Visualize the future trajectory on the given frame.
@@ -698,7 +710,7 @@ def visualizeFutureTrajectory(
 
     # show both image (previous on the left, current on the right) on the same window
     combinedFrame = np.hstack((previousFrame, currentFrame))
-    cv2.imshow("Future Trajectory Visualization", combinedFrame)
+    cv2.imshow(windowName, combinedFrame)
     cv2.waitKey(1)
 
 
@@ -908,7 +920,13 @@ def generateDatasetNvidiaClip(
     vectorTimeWindow: float,
     temporalContextTimeWindow: float,
     DEBUGVIZ: bool = False,
-    labelsOnly: bool = True
+    labelsOnly: bool = True,
+    indexCounter: Optional[Any] = None,
+    indexLock: Optional[Any] = None,
+    progressDict: Optional[Any] = None,
+    progressModulo: int = 10,
+    verbose: bool = True,
+    statusDict: Optional[Any] = None
 ) -> int:
     """
     Generate dataset from NVIDIA egomotion and camera clips.
@@ -934,33 +952,39 @@ def generateDatasetNvidiaClip(
     egomotionPath = os.path.join(egomotionDir, f"{clipUuid}.egomotion.parquet")
 
     if not os.path.exists(cameraVideoPath) or not os.path.exists(cameraTimestampsPath) or not os.path.exists(egomotionPath):
-        print(f"Skipping {clipUuid}: missing camera or egomotion files.")
+        if verbose:
+            print(f"Skipping {clipUuid}: missing camera or egomotion files.")
         return startIndex
 
     egoData = loadEgomotionParquet(egomotionPath)
     frameTimestamps = loadCameraTimestampsParquet(cameraTimestampsPath)
 
     if len(frameTimestamps) == 0:
-        print(f"Skipping {clipUuid}: empty camera timestamps.")
+        if verbose:
+            print(f"Skipping {clipUuid}: empty camera timestamps.")
         return startIndex
 
     cap = cv2.VideoCapture(cameraVideoPath, cv2.CAP_MSMF)
     if not cap.isOpened():
-        print("Error: Could not open video with MSMF backend, trying default...")
+        if verbose:
+            print("Error: Could not open video with MSMF backend, trying default...")
         cap = cv2.VideoCapture(cameraVideoPath)
         if not cap.isOpened():
-            print(f"Error: Could not open video for clip {clipUuid}.")
+            if verbose:
+                print(f"Error: Could not open video for clip {clipUuid}.")
             return startIndex
 
     fps = cap.get(cv2.CAP_PROP_FPS)
     if fps == 0:
-        print("Warning: Could not get FPS from video. Defaulting to 30.")
+        if verbose:
+            print("Warning: Could not get FPS from video. Defaulting to 30.")
         fps = 30
-    else:
+    elif verbose:
         print(f"Video FPS: {fps}")
 
     frameCount = 0
     datasetIndex = startIndex
+    generatedCount = 0
     frameBuffer: List[np.ndarray] = []
     frameIndexBuffer: List[int] = []
     frameBufferSize = max(int(fps * temporalContextTimeWindow), 2)
@@ -970,6 +994,10 @@ def generateDatasetNvidiaClip(
     skipModulo = int(round(fps * frameInterval)) if frameInterval > 0 else 0
 
     frameIndex = 0
+    if progressDict is not None:
+        progressDict[clipUuid] = 0
+    if statusDict is not None:
+        statusDict[clipUuid] = "active"
     while cap.isOpened():
         ret, frame = cap.read()
         if not ret:
@@ -985,7 +1013,8 @@ def generateDatasetNvidiaClip(
             continue
 
         if currentFrameTimestampUs >= (maxTimestampUs - vectorTimeWindowUs):
-            print(f"\nStopping generation {vectorTimeWindow}s before the end of the clip {clipUuid}.")
+            if verbose:
+                print(f"\nStopping generation {vectorTimeWindow}s before the end of the clip {clipUuid}.")
             break
 
         processedFrame = cv2.resize(frame, imageSize, interpolation=cv2.INTER_AREA)
@@ -996,7 +1025,8 @@ def generateDatasetNvidiaClip(
             frameIndexBuffer = []
             frameCount += 1
             frameIndex += 1
-            print(f"Skipping frame {frameCount:06d}                    ", end='\r')
+            if verbose:
+                print(f"Skipping frame {frameCount:06d}                    ", end='\r')
             continue
 
         currentState = interpolateEgomotionState(egoData, currentFrameTimestampUs)
@@ -1005,7 +1035,10 @@ def generateDatasetNvidiaClip(
             frameCount += 1
             continue
 
-        print(f"Processing frame {frameCount:06d} - {datasetIndex:06d}{' '*60}", end='\r')
+        if verbose:
+            print(f"Processing frame {frameCount:06d} - {datasetIndex:06d}{' '*60}", end='\r')
+        if progressDict is not None and (frameCount % progressModulo == 0):
+            progressDict[clipUuid] = frameCount
 
         if len(frameBuffer) < frameBufferSize:
             frameBuffer.append(processedFrame)
@@ -1034,6 +1067,8 @@ def generateDatasetNvidiaClip(
         turnRate = math.degrees(curvature * speed)
 
         if DEBUGVIZ:
+            workerIdentity = mp.current_process()._identity
+            workerSuffix = f"_{workerIdentity[0] - 1}" if workerIdentity else ""
             visualizeFutureTrajectory(
                 processedFrame,
                 previousFrame,
@@ -1043,9 +1078,14 @@ def generateDatasetNvidiaClip(
                 turnRate,
                 frameParams,
                 worldPos=(currentState['x'], currentState['y'], currentState['z']),
-                worldVel=(currentState['vx'], currentState['vy'], currentState['vz'])
+                worldVel=(currentState['vx'], currentState['vy'], currentState['vz']),
+                windowName=f"Future Trajectory Visualization{workerSuffix}"
             )
 
+        if indexCounter is not None and indexLock is not None:
+            with indexLock:
+                datasetIndex = int(indexCounter.value)
+                indexCounter.value += 1
         saveDatasetItem(
             outputDir,
             datasetIndex,
@@ -1066,15 +1106,71 @@ def generateDatasetNvidiaClip(
         frameIndexBuffer.append(frameIndex)
         frameBuffer = frameBuffer[-frameBufferSize:]
         frameIndexBuffer = frameIndexBuffer[-frameBufferSize:]
-        datasetIndex += 1
+        if indexCounter is None:
+            datasetIndex += 1
+        generatedCount += 1
 
         frameCount += 1
         frameIndex += 1
 
     cap.release()
-    print(f"Dataset generation complete for {clipUuid}. Generated {datasetIndex - startIndex} items. {' '*10}\n")
+    if progressDict is not None:
+        progressDict[clipUuid] = frameCount
+    if statusDict is not None:
+        statusDict[clipUuid] = "done"
+    if verbose:
+        print(f"Dataset generation complete for {clipUuid}. Generated {generatedCount} items. {' '*10}\n")
 
     return datasetIndex
+
+
+def _process_nvidia_clip(args: Tuple[Any, ...]) -> int:
+    (
+        clipUuid,
+        cameraDir,
+        egomotionDir,
+        outputDir,
+        imageSize,
+        frameInterval,
+        startIndex,
+        vectorsNumbers,
+        vectorTimeWindow,
+        temporalContextTimeWindow,
+        DEBUGVIZ,
+        labelsOnly,
+        indexCounter,
+        indexLock,
+        progressDict,
+        statusDict,
+        processedClips,
+        processedLock,
+        verbose
+    ) = args
+
+    resultIndex = generateDatasetNvidiaClip(
+        clipUuid,
+        cameraDir,
+        egomotionDir,
+        outputDir,
+        imageSize,
+        frameInterval,
+        startIndex,
+        vectorsNumbers,
+        vectorTimeWindow,
+        temporalContextTimeWindow,
+        DEBUGVIZ=DEBUGVIZ,
+        labelsOnly=labelsOnly,
+        indexCounter=indexCounter,
+        indexLock=indexLock,
+        progressDict=progressDict,
+        statusDict=statusDict,
+        verbose=verbose
+    )
+
+    with processedLock:
+        processedClips.value += 1
+
+    return resultIndex
 
 
 def main(
@@ -1087,7 +1183,8 @@ def main(
     temporalContextTimeWindow: float,
     manualStartIndex = False,
     DEBUGVIZ:bool = False,
-    labelsOnly: bool = True
+    labelsOnly: bool = True,
+    numWorkers: int = 0
     ):
     """
     Main function to generate dataset from a video file or directory of video files.
@@ -1128,22 +1225,104 @@ def main(
             mp4Files = [f for f in os.listdir(cameraDir) if f.endswith(".camera_front_wide_120fov.mp4")]
             mp4Files.sort()
 
-            for filename in mp4Files:
-                clipUuid = filename.split(".camera_front_wide_120fov.mp4")[0]
-                startIndex = generateDatasetNvidiaClip(
-                    clipUuid,
-                    cameraDir,
-                    egomotionDir,
-                    outputDir,
-                    imageSize,
-                    frameInterval,
-                    startIndex,
-                    vectorsNumbers,
-                    vectorTimeWindow,
-                    temporalContextTimeWindow,
-                    DEBUGVIZ=DEBUGVIZ,
-                    labelsOnly=labelsOnly
-                )
+            clipUuids = [f.split(".camera_front_wide_120fov.mp4")[0] for f in mp4Files]
+            totalClips = len(clipUuids)
+            if totalClips == 0:
+                print("No clips found to process.")
+                return
+
+            workerCount = numWorkers if numWorkers and numWorkers > 0 else max((os.cpu_count() or 2) - 1, 1)
+
+            if workerCount > 1:
+                manager = mp.Manager()
+                progressDict = manager.dict()
+                statusDict = manager.dict()
+                indexCounter = manager.Value('i', startIndex)
+                indexLock = manager.Lock()
+                processedClips = manager.Value('i', 0)
+                processedLock = manager.Lock()
+
+                with mp.Pool(processes=workerCount) as pool:
+                    argsList = [(
+                        clipUuid,
+                        cameraDir,
+                        egomotionDir,
+                        outputDir,
+                        imageSize,
+                        frameInterval,
+                        startIndex,
+                        vectorsNumbers,
+                        vectorTimeWindow,
+                        temporalContextTimeWindow,
+                        DEBUGVIZ,
+                        labelsOnly,
+                        indexCounter,
+                        indexLock,
+                        progressDict,
+                        statusDict,
+                        processedClips,
+                        processedLock,
+                        False
+                    ) for clipUuid in clipUuids]
+
+                    results = [pool.apply_async(_process_nvidia_clip, (args,)) for args in argsList]
+
+                    startTime = time.time()
+                    initialLabels = startIndex
+                    lastLineLen = 0
+                    while True:
+                        doneCount = sum(1 for r in results if r.ready())
+
+                        activeClips = [k for k, v in list(statusDict.items()) if v == "active"]
+                        activeClips.sort()
+                        lineParts = [f"Video {clipUuid[:8]}: {progressDict.get(clipUuid, 0):04d}" for clipUuid in activeClips]
+                        if doneCount < totalClips:
+                            missingSlots = max(workerCount - len(lineParts), 0)
+                            if missingSlots:
+                                lineParts.extend(["Video loading......."] * missingSlots)
+
+                        labelsTotal = int(indexCounter.value)
+                        processed = int(processedClips.value)
+                        elapsed = max(time.time() - startTime, 1e-6)
+                        totalFps = (labelsTotal - initialLabels) / elapsed
+                        videosPerHour = processed * 3600.0 / elapsed
+
+                        line = " - ".join(lineParts)
+                        line += f" | Total labels: {labelsTotal:06d}"
+                        line += f" - Videos: {processed}/{totalClips}"
+                        line += f" - FPS: {totalFps:.1f}"
+                        line += f" - VPH: {videosPerHour:.1f}"
+
+                        pad = max(lastLineLen - len(line), 0)
+                        print(line + (" " * pad), end='\r', flush=True)
+                        lastLineLen = len(line)
+
+                        if doneCount == totalClips:
+                            break
+                        time.sleep(0.1)
+
+                    for r in results:
+                        r.get()
+
+                startIndex = int(indexCounter.value)
+                print("".ljust(max(lastLineLen, 120)), end='\r')
+            else:
+                for clipUuid in clipUuids:
+                    startIndex = generateDatasetNvidiaClip(
+                        clipUuid,
+                        cameraDir,
+                        egomotionDir,
+                        outputDir,
+                        imageSize,
+                        frameInterval,
+                        startIndex,
+                        vectorsNumbers,
+                        vectorTimeWindow,
+                        temporalContextTimeWindow,
+                        DEBUGVIZ=DEBUGVIZ,
+                        labelsOnly=labelsOnly,
+                        verbose=True
+                    )
         else:
             # Legacy dataset structure: recursively process all MP4 files
             for root, dirs, files in os.walk(Path):
@@ -1171,5 +1350,6 @@ if __name__ == "__main__":
     manualStartIndex = 0  # Starting index for dataset items, can be adjusted if resuming from a previous run
 
     debugViz = False
+    numWorkers = 6
     
-    main(videoPath, outputDir, imageSize, frameInterval, vectorsNumbers, vectorTimeWindow, temporalContextTimeWindow, manualStartIndex, DEBUGVIZ=debugViz)
+    main(videoPath, outputDir, imageSize, frameInterval, vectorsNumbers, vectorTimeWindow, temporalContextTimeWindow, manualStartIndex, DEBUGVIZ=debugViz, numWorkers=numWorkers)
