@@ -1,1 +1,1 @@
-- Fix training & validating progress bar losses values
+- Balance Nvidia dataset 

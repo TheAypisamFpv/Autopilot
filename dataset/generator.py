@@ -1338,8 +1338,8 @@ def main(
 
 
 if __name__ == "__main__":
-    videoPath = r"F:\Projects\Autopiot\nvidia_dataset"
-    outputDir = r"F:\Projects\Autopiot\dataset_output"
+    videoPath = r"F:\Projects\Autopilot\nvidia_dataset"
+    outputDir = r"F:\Projects\Autopilot\dataset_output"
     frameInterval = 0 # interval between each frame sample, in seconds
     imageSize = (640, 360)  # Width, Height
     vectorsNumbers = 12

@@ -1,6 +1,8 @@
 import os
 import json
 import random
+import time
+from datetime import datetime
 from typing import List
 import sys
 
@@ -31,12 +33,18 @@ def balanceDataset(
     i = 0
     wi = 0
     dirLen = len(os.listdir(labelsDir))
+    startTime = time.time()
     for labelFilename in os.listdir(labelsDir):
         i += 1
         completion = i / dirLen
-        if i % 10 == 0 or completion == 1.0:
+        if i % 100 == 0 or completion == 1.0:
             wi += 1
-            print(progressBar.getProgressBar(completion, wi), end='\r')
+            elapsed = time.time() - startTime
+            rate = i / elapsed if elapsed > 0 else 0.0
+            remaining = (dirLen - i) / rate if rate > 0 else 0.0
+            etaFinish = datetime.fromtimestamp(time.time() + remaining)
+            etaTime = etaFinish.strftime("%Y-%m-%d %H:%M:%S")
+            print(f"{progressBar.getProgressBar(completion, wi)} ETA: {etaTime}", end='\r')
 
         if not labelFilename.endswith(".txt"):
             print(f"Skipping non-txt file: {labelFilename}", end='\r')
@@ -98,6 +106,6 @@ def balanceDataset(
 
 
 if __name__ == "__main__":
-    datasetDir = r"D:\VS_Python_Project\Autopilot\Autopilot\dataset\output_12_3.0_0.1_framesize640x360"
-    lateralThreshold = 1.0  # meters
+    datasetDir = r"F:\Projects\Autopilot\dataset_output\output_NVIDIA_12_3.0_0.1_framesize640x360"
+    lateralThreshold = 2.0  # meters
     balanceDataset(datasetDir, lateralThreshold)

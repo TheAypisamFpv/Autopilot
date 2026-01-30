@@ -5,7 +5,7 @@ from datetime import datetime
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.utils.data import Dataset, DataLoader, random_split
+from torch.utils.data import Dataset, DataLoader, random_split, Subset
 from torchvision import transforms
 from torch.amp import GradScaler, autocast
 from PIL import Image
@@ -37,8 +37,8 @@ class DrivingDataset(Dataset):
         self.transform = transform
         self.predSteps = predSteps
         self.dtype = dtype
+        self.maxSize = maxSize
         self.labelsOnly = False
-        self._video_cache = {}
 
         if not os.path.exists(self.imagesDir):
             self.labelsOnly = True
@@ -62,12 +62,14 @@ class DrivingDataset(Dataset):
             
             keepIndices = set(balancedData.get("keep", []))
             self.samples = [idx for idx in allSamples if idx in keepIndices]
-            print(f"Filtered to {len(self.samples)} / {len(allSamples)} samples based on balanced.json")
+            totalSamples = len(self.samples)
+            effectiveSamples = min(totalSamples, self.maxSize) if self.maxSize is not None else totalSamples
+            print(f"Filtered to {effectiveSamples} / {totalSamples} samples based on balanced.json")
         else:
             self.samples = allSamples
-            print(f"No balanced.json found - using all {len(self.samples)} samples")
-
-        self.maxSize = maxSize
+            totalSamples = len(self.samples)
+            effectiveSamples = min(totalSamples, self.maxSize) if self.maxSize is not None else totalSamples
+            print(f"No balanced.json found - using {effectiveSamples} / {totalSamples} samples")
 
     def __len__(self):
         if self.maxSize is not None:
@@ -96,6 +98,9 @@ class DrivingDataset(Dataset):
                     speed = float(line.strip().split(" : ")[1])
                 elif line.startswith("video"):
                     videoPath = line.strip().split(" : ", 1)[1]
+                    """temporary FIX for folder renaming"""
+                    if "Autopiot" in videoPath:
+                        videoPath = videoPath.replace("Autopiot", "Autopilot")
                 elif line.startswith("prevFrameIndex"):
                     prevFrameIndex = int(line.strip().split(" : ")[1])
                 elif line.startswith("frameIndex"):
@@ -106,29 +111,28 @@ class DrivingDataset(Dataset):
 
         return vectors, speed, videoPath, prevFrameIndex, frameIndex
 
-    def _get_video_capture(self, videoPath):
-        cap = self._video_cache.get(videoPath)
-        if cap is not None and cap.isOpened():
-            return cap
-
+    def _read_frames_from_video(self, videoPath, prevFrameIndex, frameIndex):
         cap = cv2.VideoCapture(videoPath, cv2.CAP_MSMF)
         if not cap.isOpened():
             cap = cv2.VideoCapture(videoPath)
-        if cap.isOpened():
-            self._video_cache[videoPath] = cap
-            return cap
-        return None
+        if not cap.isOpened():
+            return None, None
 
-    def _read_frame_from_video(self, videoPath, frameIndex):
-        cap = self._get_video_capture(videoPath)
-        if cap is None:
-            return None
-        cap.set(cv2.CAP_PROP_POS_FRAMES, frameIndex)
-        ret, frame = cap.read()
-        if not ret:
-            return None
-        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        return Image.fromarray(frame)
+        try:
+            cap.set(cv2.CAP_PROP_POS_FRAMES, prevFrameIndex)
+            ret_prev, prevFrame = cap.read()
+
+            cap.set(cv2.CAP_PROP_POS_FRAMES, frameIndex)
+            ret_curr, currFrame = cap.read()
+
+            if not ret_prev or not ret_curr:
+                return None, None
+
+            prevFrame = cv2.cvtColor(prevFrame, cv2.COLOR_BGR2RGB)
+            currFrame = cv2.cvtColor(currFrame, cv2.COLOR_BGR2RGB)
+            return Image.fromarray(prevFrame), Image.fromarray(currFrame)
+        finally:
+            cap.release()
 
     def __getitem__(self, idx):
         sampleId = self.samples[idx]
@@ -136,8 +140,7 @@ class DrivingDataset(Dataset):
         vectors, speed, videoPath, prevFrameIndex, frameIndex = self._parse_label_file(labelPath)
 
         if self.labelsOnly and videoPath is not None and prevFrameIndex is not None and frameIndex is not None:
-            prevImage = self._read_frame_from_video(videoPath, prevFrameIndex)
-            currentImage = self._read_frame_from_video(videoPath, frameIndex)
+            prevImage, currentImage = self._read_frames_from_video(videoPath, prevFrameIndex, frameIndex)
             if prevImage is None or currentImage is None:
                 raise RuntimeError(f"Failed to read frames from video: {videoPath} ({prevFrameIndex}, {frameIndex})")
         else:
@@ -235,6 +238,7 @@ def trainModel(
     patience=12,
     datasetMaxSize=None,
     gradAccumSteps=2,
+    trainSamplesPerEpoch=None,
     useAuxDyn=False,
     featDim=256,
     hiddenDim=256,
@@ -309,6 +313,8 @@ def trainModel(
             datasetMaxSize = loadedParams["datasetMaxSize"]
         if "gradAccumSteps" in loadedParams:
             gradAccumSteps = loadedParams["gradAccumSteps"]
+        if "trainSamplesPerEpoch" in loadedParams:
+            trainSamplesPerEpoch = loadedParams["trainSamplesPerEpoch"]
         if "useAuxDyn" in loadedParams:
             useAuxDyn = loadedParams["useAuxDyn"]
         if "featDim" in loadedParams:
@@ -354,9 +360,24 @@ def trainModel(
     valSize = totalSamples - trainSize
     trainDataset, valDataset = random_split(dataset, [trainSize, valSize])
 
-    numWorkers = 2
-    trainLoader = DataLoader(trainDataset, batch_size=batchSize, shuffle=True, num_workers=numWorkers, pin_memory=True)
+    numWorkers = 1
     valLoader = DataLoader(valDataset, batch_size=batchSize, shuffle=False, num_workers=numWorkers, pin_memory=True)
+
+    def get_train_subset_size():
+        if trainSamplesPerEpoch is None:
+            return len(trainDataset)
+        
+        return max(1, min(trainSamplesPerEpoch, len(trainDataset)))
+
+    def build_train_loader(epoch):
+        if trainSamplesPerEpoch is None or trainSamplesPerEpoch >= len(trainDataset):
+            return DataLoader(trainDataset, batch_size=batchSize, shuffle=False, num_workers=numWorkers, pin_memory=True)
+        
+        subset_size = get_train_subset_size()
+        rng = random.Random(seed + epoch)
+        subset_indices = rng.sample(range(len(trainDataset)), subset_size)
+        subset = Subset(trainDataset, subset_indices)
+        return DataLoader(subset, batch_size=batchSize, shuffle=False, num_workers=numWorkers, pin_memory=True)
 
     model = TrajectoryModel(
         featDim=featDim, hiddenDim=hiddenDim, predSteps=predSteps, useAuxDyn=useAuxDyn, intervalSeconds=intervalSeconds
@@ -381,6 +402,7 @@ def trainModel(
         "patience": patience,
         "datasetMaxSize": datasetMaxSize,
         "gradAccumSteps": gradAccumSteps,
+        "trainSamplesPerEpoch": trainSamplesPerEpoch,
         "useAuxDyn": useAuxDyn,
         "featDim": featDim,
         "hiddenDim": hiddenDim,
@@ -395,7 +417,9 @@ def trainModel(
     # Transformer-friendly optimizer
     optimizer = optim.AdamW(model.parameters(), lr=learningRate, weight_decay=0.01, betas=(0.9, 0.95), eps=1e-8)
 
-    totalSteps = math.ceil((len(trainLoader) * numEpochs) / max(1, gradAccumSteps))
+    trainSubsetSize = get_train_subset_size()
+    batchesPerEpoch = math.ceil(trainSubsetSize / batchSize)
+    totalSteps = math.ceil((batchesPerEpoch * numEpochs) / max(1, gradAccumSteps))
     warmupSteps = min(2000, max(50, int(0.05 * totalSteps)))  # Longer warmup for transformer
 
     def lrLambda(step):
@@ -404,7 +428,9 @@ def trainModel(
         progress = (step - warmupSteps) / max(1, totalSteps - warmupSteps)
         return 0.5 * (1.0 + math.cos(math.pi * progress))
 
-    scheduler = optim.lr_scheduler.LambdaLR(optimizer, lrLambda)
+    stepsPerEpoch = math.ceil(batchesPerEpoch / max(1, gradAccumSteps))
+    globalStep = startEpoch * stepsPerEpoch
+    scheduler = optim.lr_scheduler.LambdaLR(optimizer, lrLambda, last_epoch=globalStep - 1)
 
     perStepWeights = torch.tensor([1.6, 1.3, 1.0, 0.8, 0.6, 0.5] + [0.4] * (predSteps - 6), dtype=torch.float32)  # Adjust for longer horizon
     auxDynWeight = 0.02
@@ -415,18 +441,13 @@ def trainModel(
     bestValLoss = float("inf")
     epochsNoImprove = 0
     trainingStartTime = time.time()
-    globalStep = 0
 
     if resumeModelPath:
-        # Simulate scheduler steps to match resumed epoch
-        stepsPerEpoch = math.ceil(len(trainLoader) / gradAccumSteps)
-        globalStep = startEpoch * stepsPerEpoch
-        for _ in range(globalStep):
-            scheduler.step()
         bestValLoss = min(history["val_loss"])
         epochsNoImprove = len(history["val_loss"]) - history["val_loss"].index(bestValLoss) - 1
 
     for epoch in range(startEpoch, numEpochs):
+        trainLoader = build_train_loader(epoch)
         model.train()
         runningLoss, runningADE, runningFDE = 0.0, 0.0, 0.0
         epochStartTime = time.time()
@@ -577,14 +598,14 @@ if __name__ == "__main__":
     """
     PLEASE MAKE SURE TO USE THE CORRECT DATASET (like image size, time window, etc.)
     """
-    datasetPath = r"D:\VS_Python_Project\Autopilot\Autopilot\dataset\output_12_3.0_0.1_framesize640x360_balanced"
+    datasetPath = r"F:\Projects\Autopilot\dataset_output\output_NVIDIA_12_3.0_0.1_framesize640x360"
     # Parse dataset path to extract parameters
     basename = os.path.basename(datasetPath)
     if basename.startswith('output_'):
         parts = basename.split('_')
         if len(parts) >= 3:
-            numVectors = int(parts[1])
-            vectorTimeWindow = float(parts[2])
+            numVectors = int(parts[-4])
+            vectorTimeWindow = float(parts[-3])
             intervalSeconds = vectorTimeWindow / numVectors
             # temporalContext = float(parts[3])
             # imageSize = parts[4].removeprefix("framesize").split("x")
@@ -602,15 +623,16 @@ if __name__ == "__main__":
         intervalSeconds = 0.25
 
     datasetMaxSize = None     # Maximum number of samples to load from the dataset (None = use all available)
-    numEpochs = 150           # Total number of training epochs (full passes through the dataset)
-    patience = 15             # Early stopping patience (stop if no val improvement for this many epochs)
+    numEpochs = 1000          # ~1 full pass at 10k samples/epoch for ~9.6M samples
+    patience = 50             # Early stopping patience (stop if no val improvement for this many epochs)
     batchSize = 24             # Number of samples per training batch (controls GPU memory usage)
     gradAccumSteps = 1        # Gradient accumulation steps (simulates larger effective batch if >1)
+    trainSamplesPerEpoch = 10_000  # Random samples per epoch for fast iterations
     learningRate = 5e-5       # Optimized for transformer stability
     featDim = 256             # Feature dimension in the model
     hiddenDim = 512           # Hidden dimension in the model
     useAuxDyn = False         # Whether to enable auxiliary dynamics head (speed/accel prediction)
-    resumeModelPath = "D:/VS_Python_Project/Autopilot/Autopilot/training/run17/best_model.pth"    # Set to path like "training/run13/best_model.pth" to resume training
+    resumeModelPath = None #"D:/VS_Python_Project/Autopilot/Autopilot/training/run18/best_model.pth"    # Set to path like "training/run13/best_model.pth" to resume training
 
     trainModel(
         datasetDir=datasetPath,
@@ -621,6 +643,7 @@ if __name__ == "__main__":
         patience=patience,
         datasetMaxSize=datasetMaxSize,
         gradAccumSteps=gradAccumSteps,
+        trainSamplesPerEpoch=trainSamplesPerEpoch,
         useAuxDyn=useAuxDyn,
         featDim=featDim,
         hiddenDim=hiddenDim,
