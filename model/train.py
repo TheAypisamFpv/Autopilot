@@ -239,6 +239,9 @@ def trainModel(
     datasetMaxSize=None,
     gradAccumSteps=2,
     trainSamplesPerEpoch=None,
+    valSamplesPerEpoch=None,
+    seed=42,
+    splitSeed=None,
     useAuxDyn=False,
     featDim=256,
     hiddenDim=256,
@@ -261,6 +264,10 @@ def trainModel(
         patience (int): Early stopping patience.
         datasetMaxSize (int or None): Max number of samples to load from dataset.
         gradAccumSteps (int): Gradient accumulation steps.
+        trainSamplesPerEpoch (int or None): Samples per epoch from train split.
+        valSamplesPerEpoch (int or None): Samples per epoch from val split.
+        seed (int): Base seed for reproducibility.
+        splitSeed (int or None): Seed for train/val split (defaults to seed).
         useAuxDyn (bool): Whether to use auxiliary dynamics head.
         featDim (int): Feature dimension for model.
         hiddenDim (int): Hidden dimension for model.
@@ -270,20 +277,6 @@ def trainModel(
         resumeModelPath (str or None): Path to a previously trained model to resume training from.
     """
     print()
-    
-    # Set fixed random seed for reproducibility
-    seed = 42
-    torch.manual_seed(seed)
-    random.seed(seed)
-    np.random.seed(seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed(seed)
-        torch.cuda.manual_seed_all(seed)
-        torch.backends.cudnn.deterministic = True
-        torch.backends.cudnn.benchmark = False
-    
-    if not os.path.exists(datasetDir):
-        raise FileNotFoundError(f"Dataset directory '{datasetDir}' does not exist.")
 
     if resumeModelPath:
         print(f"Resuming training from model: '{resumeModelPath}'...")
@@ -315,6 +308,12 @@ def trainModel(
             gradAccumSteps = loadedParams["gradAccumSteps"]
         if "trainSamplesPerEpoch" in loadedParams:
             trainSamplesPerEpoch = loadedParams["trainSamplesPerEpoch"]
+        if "valSamplesPerEpoch" in loadedParams:
+            valSamplesPerEpoch = loadedParams["valSamplesPerEpoch"]
+        if "seed" in loadedParams:
+            seed = loadedParams["seed"]
+        if "splitSeed" in loadedParams:
+            splitSeed = loadedParams["splitSeed"]
         if "useAuxDyn" in loadedParams:
             useAuxDyn = loadedParams["useAuxDyn"]
         if "featDim" in loadedParams:
@@ -337,6 +336,22 @@ def trainModel(
         history = {"train_loss": [], "val_loss": [], "train_ADE": [], "val_ADE": [], "train_FDE": [], "val_FDE": []}
         startEpoch = 0
 
+    if splitSeed is None:
+        splitSeed = seed
+
+    # Set fixed random seed for reproducibility
+    torch.manual_seed(seed)
+    random.seed(seed)
+    np.random.seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+
+    if not os.path.exists(datasetDir):
+        raise FileNotFoundError(f"Dataset directory '{datasetDir}' does not exist.")
+
     device = (
         torch.device(deviceOverride)
         if deviceOverride
@@ -358,16 +373,22 @@ def trainModel(
     totalSamples = len(dataset)
     trainSize = int(trainValSplit * totalSamples)
     valSize = totalSamples - trainSize
-    trainDataset, valDataset = random_split(dataset, [trainSize, valSize])
+    splitGenerator = torch.Generator().manual_seed(int(splitSeed))
+    trainDataset, valDataset = random_split(dataset, [trainSize, valSize], generator=splitGenerator)
 
     numWorkers = 1
-    valLoader = DataLoader(valDataset, batch_size=batchSize, shuffle=False, num_workers=numWorkers, pin_memory=True)
 
     def get_train_subset_size():
         if trainSamplesPerEpoch is None:
             return len(trainDataset)
         
-        return max(1, min(trainSamplesPerEpoch, len(trainDataset)))
+        return max(1, min(int(trainSamplesPerEpoch), len(trainDataset)))
+
+    def get_val_subset_size():
+        if valSamplesPerEpoch is None:
+            return len(valDataset)
+
+        return max(1, min(int(valSamplesPerEpoch), len(valDataset)))
 
     def build_train_loader(epoch):
         if trainSamplesPerEpoch is None or trainSamplesPerEpoch >= len(trainDataset):
@@ -377,6 +398,16 @@ def trainModel(
         rng = random.Random(seed + epoch)
         subset_indices = rng.sample(range(len(trainDataset)), subset_size)
         subset = Subset(trainDataset, subset_indices)
+        return DataLoader(subset, batch_size=batchSize, shuffle=False, num_workers=numWorkers, pin_memory=True)
+
+    def build_val_loader(epoch):
+        if valSamplesPerEpoch is None or valSamplesPerEpoch >= len(valDataset):
+            return DataLoader(valDataset, batch_size=batchSize, shuffle=False, num_workers=numWorkers, pin_memory=True)
+
+        subset_size = get_val_subset_size()
+        rng = random.Random(seed + 100000 + epoch)
+        subset_indices = rng.sample(range(len(valDataset)), subset_size)
+        subset = Subset(valDataset, subset_indices)
         return DataLoader(subset, batch_size=batchSize, shuffle=False, num_workers=numWorkers, pin_memory=True)
 
     model = TrajectoryModel(
@@ -403,6 +434,9 @@ def trainModel(
         "datasetMaxSize": datasetMaxSize,
         "gradAccumSteps": gradAccumSteps,
         "trainSamplesPerEpoch": trainSamplesPerEpoch,
+        "valSamplesPerEpoch": valSamplesPerEpoch,
+        "seed": seed,
+        "splitSeed": splitSeed,
         "useAuxDyn": useAuxDyn,
         "featDim": featDim,
         "hiddenDim": hiddenDim,
@@ -530,6 +564,7 @@ def trainModel(
 
         model.eval()
         valLoss, valADE, valFDE = 0.0, 0.0, 0.0
+        valLoader = build_val_loader(epoch)
 
         print('\n\nValidation Progress:')
 
@@ -596,7 +631,7 @@ def trainModel(
 
 if __name__ == "__main__":
     """
-    PLEASE MAKE SURE TO USE THE CORRECT DATASET (like image size, time window, etc.)
+    PLEASE MAKE SURE TO USE A CORRECT DATASET (like image size, time window, etc.)
     """
     datasetPath = r"F:\Projects\Autopilot\dataset_output\output_NVIDIA_12_3.0_0.1_framesize640x360"
     # Parse dataset path to extract parameters
@@ -622,28 +657,35 @@ if __name__ == "__main__":
         predSteps = 12
         intervalSeconds = 0.25
 
-    datasetMaxSize = None     # Maximum number of samples to load from the dataset (None = use all available)
-    numEpochs = 1000          # ~1 full pass at 10k samples/epoch for ~9.6M samples
-    patience = 50             # Early stopping patience (stop if no val improvement for this many epochs)
-    batchSize = 24             # Number of samples per training batch (controls GPU memory usage)
-    gradAccumSteps = 1        # Gradient accumulation steps (simulates larger effective batch if >1)
-    trainSamplesPerEpoch = 10_000  # Random samples per epoch for fast iterations
-    learningRate = 5e-5       # Optimized for transformer stability
-    featDim = 256             # Feature dimension in the model
-    hiddenDim = 512           # Hidden dimension in the model
-    useAuxDyn = False         # Whether to enable auxiliary dynamics head (speed/accel prediction)
-    resumeModelPath = None #"D:/VS_Python_Project/Autopilot/Autopilot/training/run18/best_model.pth"    # Set to path like "training/run13/best_model.pth" to resume training
+    datasetMaxSize = None           # Maximum number of samples to load from the dataset (None = use all available)
+    numEpochs = 1000                # ~1 full pass at 10k samples/epoch for ~9.6M samples
+    patience = 50                   # Early stopping patience (stop if no val improvement for this many epochs)
+    batchSize = 24                  # Number of samples per training batch (controls GPU memory usage)
+    gradAccumSteps = 1              # Gradient accumulation steps (simulates larger effective batch if >1)
+    trainValSplit = 0.8             # Train/validation split ratio
+    trainSamplesPerEpoch = 10_000   # Random samples per epoch for fast iterations
+    valSamplesPerEpoch = (1 - trainValSplit)*trainSamplesPerEpoch      # Random val samples per epoch (20% of trainSamplesPerEpoch)
+    seed = 42                       # Base seed for reproducibility
+    splitSeed = 42                  # Train/val split seed (keep fixed to avoid contamination)
+    learningRate = 5e-5             # Optimized for transformer stability
+    featDim = 256                   # Feature dimension in the model
+    hiddenDim = 512                 # Hidden dimension in the model
+    useAuxDyn = False               # Whether to enable auxiliary dynamics head (speed/accel prediction)
+    resumeModelPath = None          #"D:/VS_Python_Project/Autopilot/Autopilot/training/run18/best_model.pth"    # Set to path like "training/run13/best_model.pth" to resume training
 
     trainModel(
         datasetDir=datasetPath,
         numEpochs=numEpochs,
         batchSize=batchSize,
         learningRate=learningRate,
-        trainValSplit=0.8,
+        trainValSplit=trainValSplit,
         patience=patience,
         datasetMaxSize=datasetMaxSize,
         gradAccumSteps=gradAccumSteps,
         trainSamplesPerEpoch=trainSamplesPerEpoch,
+        valSamplesPerEpoch=valSamplesPerEpoch,
+        seed=seed,
+        splitSeed=splitSeed,
         useAuxDyn=useAuxDyn,
         featDim=featDim,
         hiddenDim=hiddenDim,
