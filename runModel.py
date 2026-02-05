@@ -454,12 +454,14 @@ def visualizeFrame(
     attnMap,
     currentTelemetry,
     interval,
+    timeSteps,
     intrinsics,
     extrinsics,
     carWidth,
     carLength,
     rearAxleToCenter,
     viewModeLabel,
+    overlayAttention=False,
 ):
     scaledFrame = cv2.resize(frame, (frame.shape[1] // DOWNSCALE, frame.shape[0] // DOWNSCALE))
 
@@ -534,6 +536,16 @@ def visualizeFrame(
     alpha = trajectoryOverlay[..., 3] / 255.0
     scaledFrame = ((1 - alpha[..., None]) * scaledFrame + alpha[..., None] * trajectoryOverlay[..., :3]).astype(np.uint8)
 
+    if attnMap is not None and overlayAttention:
+        attnResized = cv2.resize(attnMap, (scaledFrame.shape[1], scaledFrame.shape[0]), interpolation=cv2.INTER_LINEAR)
+        attnNorm = attnResized / (attnResized.max() + 1e-8)
+        attnDisplay = (attnNorm ** 0.5)
+        attnDisplay = (attnDisplay * 255).astype(np.uint8)
+        heatmap = cv2.applyColorMap(attnDisplay, cv2.COLORMAP_JET)
+        # blend onto scaledFrame
+        alpha_attn = 0.3
+        scaledFrame = cv2.addWeighted(scaledFrame, 1 - alpha_attn, heatmap, alpha_attn, 0)
+
     font = cv2.FONT_HERSHEY_SIMPLEX
     fontScale = 1 / DOWNSCALE
     fontColor = (255, 255, 255)
@@ -574,19 +586,20 @@ def visualizeFrame(
         firstVector = predictions[0]
         firstVectorNp = firstVector.cpu().numpy() if isinstance(firstVector, torch.Tensor) else np.asarray(firstVector)
         distance = math.sqrt(float(firstVectorNp[0]) ** 2 + float(firstVectorNp[1]) ** 2)
-        requestedSpeedMs = distance / interval
+        stepSeconds = timeSteps[0] if timeSteps else interval
+        requestedSpeedMs = distance / max(stepSeconds, 1e-6)
         requestedSpeedKph = requestedSpeedMs * 3.6
         speedText = f"Predicted target speed: {requestedSpeedMs:.1f} m/s ({requestedSpeedKph:.1f} km/h)"
         putTextWithOutline(scaledFrame, speedText, (speedCoords[0] + 550 // DOWNSCALE, speedCoords[1]), font, fontScale, blueColor, thickness)
 
-    if attnMap is not None and SHOWATTENTION:
+    if attnMap is not None and SHOWATTENTION and not overlayAttention:
         attnResized = cv2.resize(attnMap, (scaledFrame.shape[1], scaledFrame.shape[0]), interpolation=cv2.INTER_LINEAR)
         attnNorm = attnResized / (attnResized.max() + 1e-8)
         attnDisplay = (attnNorm ** 0.5)
         attnDisplay = (attnDisplay * 255).astype(np.uint8)
         heatmap = cv2.applyColorMap(attnDisplay, cv2.COLORMAP_JET)
-        heatmap = cv2.resize(heatmap, (scaledFrame.shape[1] // 5, scaledFrame.shape[0] // 5))
-        cv2.imshow("Attention Map Overlay", heatmap)
+        heatmapSmall = cv2.resize(heatmap, (scaledFrame.shape[1] // 5, scaledFrame.shape[0] // 5))
+        cv2.imshow("Attention Map Overlay", heatmapSmall)
 
     if DEBUG:
         """DEBUG"""
@@ -613,6 +626,7 @@ def runModel(modelPath, videoPath, calibrationRoot, temporalContextTimeWindow=0.
         hiddenDim = trainingParams.get('hiddenDim', 1024)
         predSteps = trainingParams.get('predSteps', 12)
         intervalSeconds = trainingParams.get('intervalSeconds', 0.25)
+        timeSteps = trainingParams.get('timeSteps', None)
 
         modelName = trainingParams.get('modelName', 'unknown_model')
         availableModelName = TrajectoryModel(featDim=featDim, hiddenDim=hiddenDim, predSteps=predSteps).to(device).name
@@ -626,13 +640,15 @@ def runModel(modelPath, videoPath, calibrationRoot, temporalContextTimeWindow=0.
         warnings.warn(f"{paramsPath} not found, using defaults (This may cause errors if model architecture mismatches.)\n")
         featDim, hiddenDim, predSteps = 512, 1024, 12
         intervalSeconds = 0.25
+        timeSteps = None
 
-    model = TrajectoryModel(featDim=featDim, hiddenDim=hiddenDim, predSteps=predSteps, intervalSeconds=intervalSeconds).to(device)
+    model = TrajectoryModel(featDim=featDim, hiddenDim=hiddenDim, predSteps=predSteps, intervalSeconds=intervalSeconds, timeSteps=timeSteps).to(device)
     model.load_state_dict(torch.load(modelPath, map_location=device))
     model.eval()
 
     predSteps = model.outputSpec.get('num_vectors', 12) if hasattr(model, 'outputSpec') else 12
     interval = model.outputSpec.get('intervalSeconds', intervalSeconds) if hasattr(model, 'outputSpec') else intervalSeconds
+    timeSteps = model.outputSpec.get('timeSteps', timeSteps) if hasattr(model, 'outputSpec') else timeSteps
     inputImageSize = model.inputSpec.get('image_size', (270, 480)) if hasattr(model, 'inputSpec') else (270, 480)
 
     print(f"\nModel specs - Input Size: {inputImageSize} -> Output PredSteps: {predSteps}, Interval: {interval}s\n")
@@ -708,7 +724,8 @@ def runModel(modelPath, videoPath, calibrationRoot, temporalContextTimeWindow=0.
     prediction = None
     labels = None
     lastAttnMap = None
-    showModelView = False
+    viewMode = 0
+    attnIndex = -1
 
     print()
     with torch.no_grad():
@@ -773,12 +790,21 @@ def runModel(modelPath, videoPath, calibrationRoot, temporalContextTimeWindow=0.
                     modelStart = time.perf_counter()
                     prediction, _, attnMaps = model(currentImgTensor, prevImgTensor)
                     modelTimeMs = (time.perf_counter() - modelStart) * 1000.0
-                    lastAttnMap = attnMaps[-1].squeeze().cpu().numpy() if attnMaps else None
+                    if attnMaps:
+                        if attnIndex == -1:
+                            lastAttnMap = attnMaps[-1].squeeze().cpu().numpy()
+                        else:
+                            lastAttnMap = attnMaps[attnIndex].squeeze().cpu().numpy()
+                    else:
+                        lastAttnMap = None
 
                 if currentFrameTimestampUs is not None and currentEgoState is not None:
                     trajStart = time.perf_counter()
-                    intervalUs = int(interval * 1e6)
-                    targetTimesUs = [currentFrameTimestampUs + intervalUs * (i + 1) for i in range(predSteps)]
+                    if timeSteps:
+                        targetTimesUs = [currentFrameTimestampUs + int(offset * 1e6) for offset in timeSteps]
+                    else:
+                        intervalUs = int(interval * 1e6)
+                        targetTimesUs = [currentFrameTimestampUs + intervalUs * (i + 1) for i in range(predSteps)]
                     futureTrajectory = calculateFutureTrajectoryEgomotion(egoData, currentFrameTimestampUs, targetTimesUs)
 
                     validVectors = [v for v in futureTrajectory if v is not None]
@@ -788,11 +814,13 @@ def runModel(modelPath, videoPath, calibrationRoot, temporalContextTimeWindow=0.
                     trajTimeMs = (time.perf_counter() - trajStart) * 1000.0
 
                 displayFrame = frame
-                if showModelView:
+                if viewMode == 1 or viewMode == 2:
                     modelViewSmall = cv2.resize(frame, (inputImageSize[1], inputImageSize[0]))
                     displayFrame = cv2.resize(modelViewSmall, (frame.shape[1], frame.shape[0]))
 
                 vizStart = time.perf_counter()
+                overlayAttention = (viewMode == 2)
+                viewModeLabel = "Original View" if viewMode == 0 else "Model View" if viewMode == 1 else f"Internal Model View{' (All)' if attnIndex == -1 else f' (Step {attnIndex+1})'}"
                 visualizeFrame(
                     displayFrame,
                     prediction.squeeze() if prediction is not None else None,
@@ -800,12 +828,14 @@ def runModel(modelPath, videoPath, calibrationRoot, temporalContextTimeWindow=0.
                     lastAttnMap,
                     currentTelemetry,
                     interval,
+                    timeSteps,
                     intrinsics,
                     extrinsics,
                     carWidth,
                     carLength,
                     rearAxleToCenter,
-                    "Model View" if showModelView else "Original View",
+                    viewModeLabel,
+                    overlayAttention,
                 )
                 vizTimeMs = (time.perf_counter() - vizStart) * 1000.0
 
@@ -824,7 +854,15 @@ def runModel(modelPath, videoPath, calibrationRoot, temporalContextTimeWindow=0.
             if key & 0xFF == ord('q'):
                 break
             if key & 0xFF == ord('v'):
-                showModelView = not showModelView
+                viewMode = (viewMode + 1) % 3
+            if viewMode == 2:
+                if key & 0xFF == ord('j'):  # left (previous attention)
+                    attnIndex = max(-1, attnIndex - 1)
+                    # print(f"Left (q): attnIndex = {attnIndex}")
+                elif key & 0xFF == ord('l'):  # right (next attention)
+                    maxIndex = len(attnMaps) - 1 if attnMaps else -1
+                    attnIndex = min(maxIndex, attnIndex + 1)
+                    # print(f"Right (d): attnIndex = {attnIndex}")
 
     cap.release()
     cv2.destroyAllWindows()
@@ -834,13 +872,13 @@ if __name__ == '__main__':
     DOWNSCALE = 2
     SHOWATTENTION = True
     SHOWORIGINALTRAJ = True
-    USEGPU = True
+    USEGPU = False
     DEBUG = False
 
-    modelPath = r"D:\VS_Python_Project\Autopilot\Autopilot\training\run18\best_model.pth"
-    videoPath = r"F:\Projects\Autopilot\nvidia_dataset\camera\camera_front_wide_120fov"
+    modelPath = r"C:\Users\Aypisam\Documents\VS_Python_Project\Autopilot\training\run20\best_model.pth"
+    videoPath = r"C:\Users\Aypisam\Videos\Autopilot_Videos\Camera\camera_front_wide_120fov"
 
-    calibrationRoot = r"F:\Projects\Autopilot\nvidia_dataset\calibration"
+    calibrationRoot = r"C:\Users\Aypisam\Videos\Autopilot_Videos\calibration"
 
     # if video path is a list, run on each video
     if isinstance(videoPath, list):

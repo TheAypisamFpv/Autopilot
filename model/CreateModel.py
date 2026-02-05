@@ -6,14 +6,16 @@ import torch.nn.functional as F
 # Small utility blocks
 # -------------------------
 class ConvGNAct(nn.Module):
-    def __init__(self, in_ch, out_ch, kernel=3, stride=1, padding=1, groups=32):
+    def __init__(self, inCh, outCh, kernel=3, stride=1, padding=1, groups=32):
         super().__init__()
-        self.conv = nn.Conv2d(in_ch, out_ch, kernel, stride, padding, bias=False)
-        gn_groups = min(groups, out_ch)
-        self.gn = nn.GroupNorm(gn_groups, out_ch)
-        self.act = nn.ReLU(inplace=True)
+        self.conv = nn.Conv2d(inCh, outCh, kernel, stride, padding, bias=False)
+        gnGroups = min(groups, outCh)
+        self.gn = nn.GroupNorm(gnGroups, outCh)
+        self.act = nn.SiLU(inplace=True)
+
     def forward(self, x):
         return self.act(self.gn(self.conv(x)))
+
 
 class SEBlock(nn.Module):
     def __init__(self, ch, reduction=8):
@@ -22,7 +24,7 @@ class SEBlock(nn.Module):
         self.pool = nn.AdaptiveAvgPool2d(1)
         self.fc = nn.Sequential(
             nn.Linear(ch, reducedCh),
-            nn.ReLU(inplace=True),
+            nn.SiLU(inplace=True),
             nn.Linear(reducedCh, ch),
             nn.Sigmoid()
         )
@@ -33,6 +35,7 @@ class SEBlock(nn.Module):
         y = self.fc(y).view(b, c, 1, 1)
         return x * y
 
+
 class Residual(nn.Module):
     def __init__(self, ch, useSe=False):
         super().__init__()
@@ -40,171 +43,248 @@ class Residual(nn.Module):
             ConvGNAct(ch, ch, kernel=3, padding=1),
             ConvGNAct(ch, ch, kernel=3, padding=1)
         )
-        self.useSe = useSe
         self.se = SEBlock(ch) if useSe else nn.Identity()
+
     def forward(self, x):
         out = x + self.block(x)
         return self.se(out)
 
-# -------------------------
-# Encoder: early fusion of two frames (6 channels)
-# -------------------------
-class EarlyFusionEncoder(nn.Module):
-    def __init__(self, feat_dim=256):
-        super().__init__()
-        # Keep it compact but expressive
-        self.stem = nn.Sequential(
-            ConvGNAct(6, 32, kernel=7, stride=2, padding=3),  # (B,32,H/2,W/2)
-            Residual(32, useSe=True),
-            ConvGNAct(32, 64, stride=2)                       # (B,64,H/4,W/4)
-        )
-        self.layer1 = nn.Sequential(
-            Residual(64, useSe=True),
-            ConvGNAct(64, 128, stride=2)                      # (B,128,H/8,W/8)
-        )
-        self.layer2 = nn.Sequential(
-            Residual(128, useSe=True),
-            ConvGNAct(128, feat_dim, stride=2)                # (B,feat_dim,H/16,W/16)
-        )
-        # projections for multi-scale fusion at H/4
-        self.shallowProj = nn.Conv2d(64, feat_dim, kernel_size=1, bias=False)
-        self.deepProj = nn.Conv2d(feat_dim, feat_dim, kernel_size=1, bias=False)
-        self.fuse = ConvGNAct(feat_dim, feat_dim, kernel=3, padding=1)
 
-    def forward(self, img_t, img_tm1):
-        # expect inputs shape (B,3,H,W)
-        x = torch.cat([img_t, img_tm1], dim=1)  # (B,6,H,W)
-        x = self.stem(x)     # (B,64,H/4,W/4)
-        shallow = self.shallowProj(x)
-        x = self.layer1(x)   # (B,128,H/8,W/8)
-        x = self.layer2(x)   # (B,feat_dim,H/16,W/16)
-        deep = self.deepProj(x)
-        deepUp = F.interpolate(deep, size=shallow.shape[-2:], mode="bilinear", align_corners=False)
-        fmap = self.fuse(shallow + deepUp)  # (B, feat_dim, H/4, W/4)
-        # Add vertical positional encoding
-        H, W = fmap.shape[2:]
-        yCoords = torch.zeros(1, 1, H, 1, device=fmap.device)
-        usefulStart = 0.35  # 35% from top is useless
-        usefulEnd = 0.84    # 84% from top (100% - 16% bottom)
-        for i in range(H):
-            normPos = i / (H - 1)
-            if normPos < usefulStart:
-                y = -1.0
-            elif normPos > usefulEnd:
-                y = 1.0
-            else:
-                y = (normPos - usefulStart) / (usefulEnd - usefulStart) * 2 - 1
-            yCoords[0, 0, i, 0] = y
-        fmap = torch.cat([fmap, yCoords.expand(fmap.size(0), 1, H, W)], dim=1)
+def buildNonUniformTimeOffsets(vectorCount:int, totalTime:float) -> list:
+    """Builds a list of non-uniform time offsets for the predicted vectors.
+    
+    If vectorCount is 12 and totalTime is 3.0, uses a predefined non-uniform pattern.
+    Otherwise, generates uniform offsets based on totalTime and vectorCount.
+    Args:
+        vectorCount (int): The number of vectors to predict.
+        totalTime (float): The total time span for the predictions.
+    Returns:
+        list: A list of time offsets for each predicted vector.
+    """
+    
+    if vectorCount == 12 and abs(totalTime - 3.0) < 1e-6:
+        timeDeltas = [0.1] * 6 + [0.25] * 4 + [0.7] * 2
+    else:
+        step = totalTime / max(1, vectorCount)
+        timeDeltas = [step] * vectorCount
+
+    timeOffsets = []
+    running = 0.0
+    for delta in timeDeltas:
+        running += float(delta)
+        timeOffsets.append(running)
+
+    if timeOffsets:
+        scale = totalTime / max(1e-6, timeOffsets[-1])
+        if abs(scale - 1.0) > 1e-6:
+            timeOffsets = [t * scale for t in timeOffsets]
+
+    return [round(t, 4) for t in timeOffsets]
+
+
+# -------------------------
+# Encoder: shared-weight motion encoder + FPN fusion
+# -------------------------
+class MotionBackbone(nn.Module):
+    """
+    A lightweight CNN backbone that extracts multi-scale features from input images.
+    Consists of a stem block followed by three stages, each downsampling the spatial resolution and increasing the channel count. Each stage includes a residual block with optional SE attention. The backbone outputs two feature maps at 1/8 and 1/16 resolution for subsequent fusion in the MotionFpnEncoder.
+    Args:
+        baseChannels (int): The number of channels in the first stage, which is then scaled up in subsequent stages.
+    Returns:
+        Tuple[torch.Tensor, torch.Tensor]: A tuple containing the 1/8 and 1/16 resolution feature maps extracted from the input image.
+    """
+    def __init__(self, baseChannels=32):
+        super().__init__()
+        self.stem = nn.Sequential(
+            ConvGNAct(3, baseChannels, kernel=5, stride=2, padding=2),
+            Residual(baseChannels, useSe=True)
+        )
+        self.stage1 = nn.Sequential(
+            ConvGNAct(baseChannels, baseChannels * 2, stride=2),
+            Residual(baseChannels * 2, useSe=True)
+        )
+        self.stage2 = nn.Sequential(
+            ConvGNAct(baseChannels * 2, baseChannels * 3, stride=2),
+            Residual(baseChannels * 3, useSe=True)
+        )
+        self.stage3 = nn.Sequential(
+            ConvGNAct(baseChannels * 3, baseChannels * 4, stride=2),
+            Residual(baseChannels * 4, useSe=True)
+        )
+
+    def forward(self, x):
+        x = self.stem(x)
+        x = self.stage1(x)
+        feat8 = self.stage2(x)
+        feat16 = self.stage3(feat8)
+        return feat8, feat16
+
+
+class MotionFpnEncoder(nn.Module):
+    """
+    Feature pyramid encoder that fuses motion cues between consecutive frames.
+    Builds a MotionBackbone to extract multi-scale features from the current and
+    previous frames, concatenates per-scale features with their temporal
+    differences, fuses them through 1x1 convolutions, and combines scales using a
+    top-down FPN-style fusion. Adds normalized x/y coordinate channels to the
+    final feature map to provide explicit spatial context.
+    Args:
+        featDim (int): Output feature dimensionality after fusion.
+        baseChannels (int): Base channel count for the backbone.
+    Returns:
+        torch.Tensor: Fused feature map with appended coordinate channels of
+            shape (B, featDim + 2, H, W).
+    """
+    def __init__(self, featDim=192, baseChannels=32):
+        super().__init__()
+        self.backbone = MotionBackbone(baseChannels=baseChannels)
+        self.fuse8 = nn.Conv2d(baseChannels * 3 * 3, featDim, kernel_size=1, bias=False)
+        self.fuse16 = nn.Conv2d(baseChannels * 4 * 3, featDim, kernel_size=1, bias=False)
+        self.fpnFuse = ConvGNAct(featDim, featDim, kernel=3, padding=1)
+
+    def forward(self, imgT, imgTm1):
+        feat8T, feat16T = self.backbone(imgT)
+        feat8Tm1, feat16Tm1 = self.backbone(imgTm1)
+
+        motion8 = torch.cat([feat8T, feat8Tm1, feat8T - feat8Tm1], dim=1)
+        motion16 = torch.cat([feat16T, feat16Tm1, feat16T - feat16Tm1], dim=1)
+
+        fused8 = self.fuse8(motion8)
+        fused16 = self.fuse16(motion16)
+        fused16Up = F.interpolate(fused16, size=fused8.shape[-2:], mode="bilinear", align_corners=False)
+
+        fmap = self.fpnFuse(fused8 + fused16Up)
+
+        batchSize, _, height, width = fmap.shape
+        yCoords = torch.linspace(-1.0, 1.0, height, device=fmap.device).view(1, 1, height, 1).expand(batchSize, 1, height, width)
+        xCoords = torch.linspace(-1.0, 1.0, width, device=fmap.device).view(1, 1, 1, width).expand(batchSize, 1, height, width)
+        fmap = torch.cat([fmap, xCoords, yCoords], dim=1)
+
         return fmap
 
-# -------------------------
-# Attention used by decoder (computes spatial attention conditioned on decoder state)
-# -------------------------
-class SpatialAttentionDecoder(nn.Module):
-    def __init__(self, feat_dim, hidden_dim):
-        super().__init__()
-        self.key_conv = nn.Conv2d(feat_dim, feat_dim, 1, bias=False)
-        self.value_conv = nn.Conv2d(feat_dim, feat_dim, 1, bias=False)
-        self.query_fc = nn.Linear(hidden_dim, feat_dim)
-        # scale when computing dot-product
-        self.scale = feat_dim ** -0.5
-
-    def forward(self, feat_map, query):
-        # feat_map: (B, C, H, W), query: (B, hidden_dim)
-        B, C, H, W = feat_map.shape
-        keys = self.key_conv(feat_map).view(B, C, -1).permute(0, 2, 1)   # (B, S, C)
-        vals = self.value_conv(feat_map).view(B, C, -1).permute(0, 2, 1)   # (B, S, C)
-        q = self.query_fc(query).unsqueeze(1)                             # (B,1,C)
-        attn_logits = torch.bmm(q, keys.permute(0,2,1)) * self.scale      # (B,1,S)
-        attn = torch.softmax(attn_logits, dim=-1)                         # (B,1,S)
-        context = torch.bmm(attn, vals).squeeze(1)                        # (B,C)
-        attn_map = attn.view(B, 1, H, W)
-        return context, attn_map
 
 # -------------------------
-# Decoder: autoregressive GRUCell that attends to image features each step
+# Decoder: lightweight transformer over spatial memory
 # -------------------------
-class AttentiveGRUDecoder(nn.Module):
-    def __init__(self, feat_dim=256, hidden_dim=256, pred_steps=12):
+class VectorTransformerDecoder(nn.Module):
+    def __init__(self, featDim=194, hiddenDim=256, predSteps=12, numHeads=4, numLayers=2, dropout=0.1, timeSteps=None):
         super().__init__()
-        self.pred_steps = pred_steps
-        self.hidden_dim = hidden_dim
-        self.attn = SpatialAttentionDecoder(feat_dim, hidden_dim)
-        # map pooled features -> initial h/c
-        self.init_h = nn.Linear(feat_dim, hidden_dim)
-        self.init_c = nn.Linear(feat_dim, hidden_dim)
-        # GRUCell input: prev_xy (2) concatenated with context (feat_dim)
-        self.grucell = nn.GRUCell(input_size=2 + feat_dim, hidden_size=hidden_dim)
-        self.out_head = nn.Sequential(
-            nn.Linear(hidden_dim, hidden_dim//2),
-            nn.ReLU(),
-            nn.Linear(hidden_dim//2, 2)   # predict delta x,y for next step
+        self.predSteps = predSteps
+        self.memoryProj = nn.Conv2d(featDim, hiddenDim, kernel_size=1, bias=False)
+        self.memoryNorm = nn.LayerNorm(hiddenDim)
+
+        decoderLayer = nn.TransformerDecoderLayer(
+            d_model=hiddenDim,
+            nhead=numHeads,
+            dim_feedforward=hiddenDim * 4,
+            dropout=dropout,
+            batch_first=True,
+            activation="gelu",
+        )
+        self.decoder = nn.TransformerDecoder(decoderLayer, num_layers=numLayers)
+
+        self.queryEmbed = nn.Parameter(torch.randn(predSteps, hiddenDim))
+        self.timeMlp = nn.Sequential(
+            nn.Linear(1, hiddenDim),
+            nn.SiLU(inplace=True),
+            nn.Linear(hiddenDim, hiddenDim)
         )
 
-    def forward(self, feat_map, teacherForcing=False, gtTraj=None, tfRatio=0.9):
-        # feat_map: (B, C, H, W)
-        B = feat_map.size(0)
-        device = feat_map.device
-        pooled = F.adaptive_avg_pool2d(feat_map, (1,1)).view(B, -1)   # (B, feat_dim)
-        h = self.init_h(pooled)                                      # (B, hidden_dim)
-        c = self.init_c(pooled)                                      # (B, hidden_dim) - unused but kept for API parity
-        prev_xy = torch.zeros(B, 2, device=device)                   # start at origin in vehicle frame
-        preds = []
-        attn_maps = []
-        for t in range(self.pred_steps):
-            context, attn_map = self.attn(feat_map, h)               # (B, feat_dim), (B,1,H,W)
-            gru_in = torch.cat([prev_xy, context], dim=1)           # (B, 2 + feat_dim)
-            h = self.grucell(gru_in, h)                             # (B, hidden_dim)
-            delta = self.out_head(h)                                # (B, 2)
-            next_xy = prev_xy + delta                               # absolute position (accumulated)
-            preds.append(next_xy.unsqueeze(1))
-            attn_maps.append(attn_map)
-            # teacher forcing option (if gt_traj provided)
-            if teacherForcing and gtTraj is not None and torch.rand(1).item() < tfRatio:
-                prev_xy = gtTraj[:, t, :].detach()                 # feed GT
-            else:
-                prev_xy = next_xy.detach()
-        preds = torch.cat(preds, dim=1)  # (B, T, 2)
-        return preds, attn_maps
+        if timeSteps is None:
+            timeSteps = [float(i + 1) for i in range(predSteps)]
+        self.register_buffer("timeSteps", torch.tensor(timeSteps, dtype=torch.float32), persistent=False)
+
+        self.outHead = nn.Sequential(
+            nn.Linear(hiddenDim, hiddenDim // 2),
+            nn.SiLU(inplace=True),
+            nn.Linear(hiddenDim // 2, 2)
+        )
+
+    def forward(self, featMap, timeSteps=None):
+        batchSize = featMap.size(0)
+        memory = self.memoryProj(featMap)
+        memory = memory.flatten(2).permute(0, 2, 1)
+        memory = self.memoryNorm(memory)
+
+        query = self.queryEmbed.unsqueeze(0).expand(batchSize, -1, -1)
+        if timeSteps is None:
+            timeSteps = self.timeSteps
+        else:
+            timeSteps = torch.tensor(timeSteps, dtype=torch.float32, device=featMap.device)
+        timeEmbed = self.timeMlp(timeSteps.view(1, -1, 1))
+        query = query + timeEmbed
+
+        decoded = self.decoder(query, memory)
+        preds = self.outHead(decoded)
+        attnMaps = [None for _ in range(self.predSteps)]
+        return preds, attnMaps
+
 
 # -------------------------
 # Full model wrapper
 # -------------------------
 class TrajectoryModel(nn.Module):
-    def __init__(self, featDim=256, hiddenDim=256, predSteps=12, useAuxDyn=False, intervalSeconds=0.25):
+    def __init__(
+        self,
+        featDim=192,
+        hiddenDim=256,
+        predSteps=12,
+        useAuxDyn=False,
+        intervalSeconds=0.25,
+        totalSeconds=3.0,
+        timeSteps=None,
+        baseChannels=32,
+    ):
         super().__init__()
-        self.encoder = EarlyFusionEncoder(feat_dim=featDim)
-        self.decoder = AttentiveGRUDecoder(feat_dim=featDim + 1, hidden_dim=hiddenDim, pred_steps=predSteps)
+        if timeSteps is None:
+            totalSeconds = float(totalSeconds) if totalSeconds is not None else float(intervalSeconds * predSteps)
+            timeSteps = buildNonUniformTimeOffsets(predSteps, totalSeconds)
+
+        self.timeSteps = timeSteps
+        self.encoder = MotionFpnEncoder(featDim=featDim, baseChannels=baseChannels)
+        self.decoder = VectorTransformerDecoder(
+            featDim=featDim + 2,
+            hiddenDim=hiddenDim,
+            predSteps=predSteps,
+            numHeads=4,
+            numLayers=2,
+            dropout=0.1,
+            timeSteps=timeSteps,
+        )
+
         self.use_aux_dyn = useAuxDyn
         if useAuxDyn:
             self.aux = nn.Sequential(
-                nn.AdaptiveAvgPool2d((1,1)),
+                nn.AdaptiveAvgPool2d((1, 1)),
                 nn.Flatten(),
-                nn.Linear(featDim + 1, 128),
-                nn.ReLU(),
-                nn.Linear(128, 2)   # predict speed, accel (auxiliary only)
+                nn.Linear(featDim + 2, 128),
+                nn.SiLU(inplace=True),
+                nn.Linear(128, 2)
             )
 
-        self.name = "TrajectoryModel_EarlyFusion_AttentiveGRU_V3_H4_SE"
+        self.name = "TrajectoryModel_MotionFpn_Transformer_V1"
 
         # Input and output specs
         self.inputSpec = {
-            'image_size': (360, 640),  # (height, width)
-            'temporal_delay_seconds': 0.1  # Time delay between previous and current images
+            'image_size': (360, 640),
+            'temporal_delay_seconds': 0.1
         }
         self.outputSpec = {
-            'num_vectors': predSteps,  # Number of predicted trajectory vectors
-            'intervalSeconds': intervalSeconds  # Time interval between each predicted vector
+            'num_vectors': predSteps,
+            'intervalSeconds': float(timeSteps[0]) if timeSteps else intervalSeconds,
+            'totalSeconds': float(timeSteps[-1]) if timeSteps else float(predSteps * intervalSeconds),
+            'timeSteps': [float(t) for t in timeSteps] if timeSteps else None,
         }
 
-    def forward(self, img_t, img_tm1, gtTraj=None, teacherForcing=False, tfRatio=0.9):
-        fmap = self.encoder(img_t, img_tm1)
-        preds, attn_maps = self.decoder(fmap, teacherForcing=teacherForcing, gtTraj=gtTraj, tfRatio=tfRatio)
+    def forward(self, imgT, imgTm1, gtTraj=None, teacherForcing=False, tfRatio=0.9, timeSteps=None):
+        fmap = self.encoder(imgT, imgTm1)
+        preds, attnMaps = self.decoder(fmap, timeSteps=timeSteps)
         aux = None
         if self.use_aux_dyn:
             aux = self.aux(fmap)
-        return preds, aux, attn_maps
+        return preds, aux, attnMaps
+
 
 # -------------------------
 # Quick smoke test & param count
@@ -213,20 +293,19 @@ if __name__ == "__main__":
     batchSize = 2
     dummyImg1 = torch.randn(batchSize, 3, 360, 640)
     dummyImg2 = torch.randn(batchSize, 3, 360, 640)
-    model = TrajectoryModel(featDim=256, hiddenDim=512, predSteps=12, useAuxDyn=True)
+    model = TrajectoryModel(featDim=192, hiddenDim=256, predSteps=12, useAuxDyn=True)
     model.eval()
-    
+
     with torch.no_grad():
         preds, aux, attn = model(dummyImg1, dummyImg2)
 
     print("Model:", model.name)
-        
-    print("preds:", preds.shape)   # expect (B, 12, 2)
+    print("preds:", preds.shape)
     if aux is not None:
         print("aux:", aux.shape)
-        
+
     print("Input spec:", model.inputSpec)
     print("Output spec:", model.outputSpec)
-        
-    total_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    print("Total trainable params:", total_params)
+
+    totalParams = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    print("Total trainable params:", totalParams)

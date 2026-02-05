@@ -14,6 +14,27 @@ import time
 # Set environment variable to increase read attempts for potential network issues with large video files
 # os.environ['OPENCV_FFMPEG_READ_ATTEMPTS'] = '8192'
 
+
+def buildNonUniformTimeOffsets(vectorCount: int, totalTime: float) -> List[float]:
+    if vectorCount == 12 and abs(totalTime - 3.0) < 1e-6:
+        timeDeltas = [0.1] * 6 + [0.25] * 4 + [0.7] * 2
+    else:
+        step = totalTime / max(1, vectorCount)
+        timeDeltas = [step] * vectorCount
+
+    timeOffsets = []
+    running = 0.0
+    for delta in timeDeltas:
+        running += float(delta)
+        timeOffsets.append(running)
+
+    if timeOffsets:
+        scale = totalTime / max(1e-6, timeOffsets[-1])
+        if abs(scale - 1.0) > 1e-6:
+            timeOffsets = [t * scale for t in timeOffsets]
+
+    return [round(t, 4) for t in timeOffsets]
+
 def loadGpsData(jsonPath: str) -> List[Dict[str, Any]]:
     """
     Load GPS data from a JSON file.
@@ -274,6 +295,42 @@ def findFutureGpsPoints(gpsData: List[Dict[str, Any]], currentFrameTime: datetim
             
     return futureGpsPoints
 
+
+def findFutureGpsPointsFromOffsets(gpsData: List[Dict[str, Any]], currentFrameTime: datetime, timeOffsets: List[float]) -> List[Dict[str, Any]]:
+    if not gpsData:
+        return []
+
+    targetTimes = [currentFrameTime + timedelta(seconds=float(offset)) for offset in timeOffsets]
+
+    startIdx = 0
+    for i, point in enumerate(gpsData):
+        if point['timestamp'] >= currentFrameTime:
+            startIdx = i
+            break
+
+    futureGpsPoints = []
+    for targetTime in targetTimes:
+        closestIdx = startIdx
+        minTimeDiff = abs((gpsData[closestIdx]['timestamp'] - targetTime).total_seconds())
+
+        searchIdx = startIdx + 1
+        while searchIdx < len(gpsData):
+            timeDiff = abs((gpsData[searchIdx]['timestamp'] - targetTime).total_seconds())
+            if timeDiff < minTimeDiff:
+                minTimeDiff = timeDiff
+                closestIdx = searchIdx
+                searchIdx += 1
+            else:
+                break
+
+        if minTimeDiff <= 0.5:
+            futureGpsPoints.append(gpsData[closestIdx])
+            startIdx = closestIdx
+        else:
+            futureGpsPoints.append(None)
+
+    return futureGpsPoints
+
 def isGpsDataValid(gpsPoint: Dict[str, Any], gpsData: List[Dict[str, Any]], currentFrameTime: datetime) -> bool:
     """
     Validate the GPS data point and its future trajectory.
@@ -450,6 +507,68 @@ def calculateFutureTrajectory(gpsData: List[Dict[str, Any]], currentPoint: Dict[
     return trajectoryVectors
 
 
+def calculateFutureTrajectoryFromOffsets(
+    gpsData: List[Dict[str, Any]],
+    currentPoint: Dict[str, Any],
+    currentFrameTime: datetime,
+    timeOffsets: List[float]
+) -> List[Dict[str, Any]]:
+    """
+    Calculate future trajectory vectors based on GPS data and non-uniform time offsets.
+    """
+    earthRadius = 6371000
+    currentLat = currentPoint['latitude']
+    currentLon = currentPoint['longitude']
+    currentHeading = currentPoint.get('heading', 0)
+
+    futureGpsPoints = findFutureGpsPointsFromOffsets(gpsData, currentFrameTime, timeOffsets)
+
+    trajectoryVectors = []
+
+    for idx, futurePoint in enumerate(futureGpsPoints):
+        if futurePoint is None:
+            trajectoryVectors.append(None)
+            continue
+
+        lat1 = math.radians(currentLat)
+        lon1 = math.radians(currentLon)
+        lat2 = math.radians(futurePoint['latitude'])
+        lon2 = math.radians(futurePoint['longitude'])
+
+        currentLat = futurePoint['latitude']
+        currentLon = futurePoint['longitude']
+
+        dlon = lon2 - lon1
+        dlat = lat2 - lat1
+        a = math.sin(dlat / 2) ** 2 + math.cos(lat1) * math.cos(lat2) * math.sin(dlon / 2) ** 2
+        c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+        distance = earthRadius * c
+
+        if distance <= 1:
+            distance = -math.log10(1 - 0.9 * distance) * distance
+
+        x = math.sin(dlon) * math.cos(lat2)
+        y = math.cos(lat1) * math.sin(lat2) - (math.sin(lat1) * math.cos(lat2) * math.cos(dlon))
+        bearing = math.degrees(math.atan2(x, y))
+        bearing = (bearing + 360) % 360
+
+        relativeBearing = (bearing - currentHeading + 360) % 360
+        if relativeBearing > 180:
+            relativeBearing -= 360
+
+        timeDiff = float(timeOffsets[idx])
+        xComponent = distance * math.sin(math.radians(relativeBearing))
+        yComponent = distance * math.cos(math.radians(relativeBearing))
+
+        trajectoryVectors.append({
+            'time': timeDiff,
+            'x': xComponent,
+            'y': yComponent,
+        })
+
+    return trajectoryVectors
+
+
 def getRandomizeFrameParams(deltaExpo: float = 0.2, deltaGamma: float = 0.2,
                      deltaBrightness: float = 0.2, deltaContrast: float = 0.2) -> np.ndarray:
     """
@@ -575,6 +694,14 @@ def saveDatasetItem(outputDir: str, index: int, prevFrame: np.ndarray, currentFr
         if validVectors:
             vectorsStr = " ".join([f"{v['x']:.3f},{v['y']:.3f}" for v in validVectors])
             f.write(vectorsStr)
+        else:
+            f.write("None")
+        f.write("\n")
+
+        f.write("vectorTimes : ")
+        if validVectors:
+            timeStr = " ".join([f"{v['time']:.3f}" for v in validVectors])
+            f.write(timeStr)
         else:
             f.write("None")
         f.write("\n")
@@ -873,8 +1000,8 @@ def generateDataset(
         previousFrame = frameBuffer[0]
 
         # Calculate future trajectory
-        interval = vectorTimeWindow / vectorsNumbers
-        futureTrajectory = calculateFutureTrajectory(gpsData, currentGpsPoint, currentFrameTime, duration=vectorTimeWindow, interval=interval)
+        timeOffsets = buildNonUniformTimeOffsets(vectorsNumbers, vectorTimeWindow)
+        futureTrajectory = calculateFutureTrajectoryFromOffsets(gpsData, currentGpsPoint, currentFrameTime, timeOffsets)
 
         # Get the acceleration in the GPS
         acceleration = round(currentGpsPoint.get('acceleration', 0.0), 1)
@@ -1050,8 +1177,8 @@ def generateDatasetNvidiaClip(
         previousFrame = frameBuffer[0]
         prevFrameIndex = frameIndexBuffer[0]
 
-        intervalUs = int(vectorTimeWindowUs / vectorsNumbers)
-        targetTimesUs = [currentFrameTimestampUs + intervalUs * (i + 1) for i in range(vectorsNumbers)]
+        timeOffsets = buildNonUniformTimeOffsets(vectorsNumbers, vectorTimeWindow)
+        targetTimesUs = [currentFrameTimestampUs + int(offset * 1e6) for offset in timeOffsets]
 
         futureTrajectory = calculateFutureTrajectoryEgomotion(egoData, currentFrameTimestampUs, targetTimesUs)
 
@@ -1124,7 +1251,7 @@ def generateDatasetNvidiaClip(
     return datasetIndex
 
 
-def _process_nvidia_clip(args: Tuple[Any, ...]) -> int:
+def processNvidiaClip(args: Tuple[Any, ...]) -> int:
     (
         clipUuid,
         cameraDir,
@@ -1265,7 +1392,7 @@ def main(
                         False
                     ) for clipUuid in clipUuids]
 
-                    results = [pool.apply_async(_process_nvidia_clip, (args,)) for args in argsList]
+                    results = [pool.apply_async(processNvidiaClip, (args,)) for args in argsList]
 
                     startTime = time.time()
                     initialLabels = startIndex
