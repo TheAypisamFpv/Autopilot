@@ -849,6 +849,7 @@ def generateDataset(
     startIndex: int,
     vectorsNumbers: int,
     vectorTimeWindow: float,
+    vectorTimeOffsets: Optional[List[float]],
     temporalContextTimeWindow: float,
     DEBUGVIZ: bool = False
     ):
@@ -1000,7 +1001,7 @@ def generateDataset(
         previousFrame = frameBuffer[0]
 
         # Calculate future trajectory
-        timeOffsets = buildNonUniformTimeOffsets(vectorsNumbers, vectorTimeWindow)
+        timeOffsets = vectorTimeOffsets if vectorTimeOffsets else buildNonUniformTimeOffsets(vectorsNumbers, vectorTimeWindow)
         futureTrajectory = calculateFutureTrajectoryFromOffsets(gpsData, currentGpsPoint, currentFrameTime, timeOffsets)
 
         # Get the acceleration in the GPS
@@ -1045,6 +1046,7 @@ def generateDatasetNvidiaClip(
     startIndex: int,
     vectorsNumbers: int,
     vectorTimeWindow: float,
+    vectorTimeOffsets: Optional[List[float]],
     temporalContextTimeWindow: float,
     DEBUGVIZ: bool = False,
     labelsOnly: bool = True,
@@ -1177,7 +1179,7 @@ def generateDatasetNvidiaClip(
         previousFrame = frameBuffer[0]
         prevFrameIndex = frameIndexBuffer[0]
 
-        timeOffsets = buildNonUniformTimeOffsets(vectorsNumbers, vectorTimeWindow)
+        timeOffsets = vectorTimeOffsets if vectorTimeOffsets else buildNonUniformTimeOffsets(vectorsNumbers, vectorTimeWindow)
         targetTimesUs = [currentFrameTimestampUs + int(offset * 1e6) for offset in timeOffsets]
 
         futureTrajectory = calculateFutureTrajectoryEgomotion(egoData, currentFrameTimestampUs, targetTimesUs)
@@ -1262,6 +1264,7 @@ def processNvidiaClip(args: Tuple[Any, ...]) -> int:
         startIndex,
         vectorsNumbers,
         vectorTimeWindow,
+        vectorTimeOffsets,
         temporalContextTimeWindow,
         DEBUGVIZ,
         labelsOnly,
@@ -1284,6 +1287,7 @@ def processNvidiaClip(args: Tuple[Any, ...]) -> int:
         startIndex,
         vectorsNumbers,
         vectorTimeWindow,
+        vectorTimeOffsets,
         temporalContextTimeWindow,
         DEBUGVIZ=DEBUGVIZ,
         labelsOnly=labelsOnly,
@@ -1307,6 +1311,7 @@ def main(
     frameInterval: int,
     vectorsNumbers: int,
     vectorTimeWindow: float,
+    vectorTimeOffsets: Optional[List[float]],
     temporalContextTimeWindow: float,
     manualStartIndex = False,
     DEBUGVIZ:bool = False,
@@ -1342,7 +1347,7 @@ def main(
     # check if the provided path is a video file or a directory
     if os.path.isfile(Path):
         # If it's a file, process it directly with the legacy GPS pipeline
-        startIndex = generateDataset(Path, outputDir, imageSize, frameInterval, startIndex, vectorsNumbers, vectorTimeWindow, temporalContextTimeWindow, DEBUGVIZ=DEBUGVIZ)
+        startIndex = generateDataset(Path, outputDir, imageSize, frameInterval, startIndex, vectorsNumbers, vectorTimeWindow, vectorTimeOffsets, temporalContextTimeWindow, DEBUGVIZ=DEBUGVIZ)
     elif os.path.isdir(Path):
         cameraDir = os.path.join(Path, "camera", "camera_front_wide_120fov")
         egomotionDir = os.path.join(Path, "labels", "egomotion")
@@ -1380,6 +1385,7 @@ def main(
                         startIndex,
                         vectorsNumbers,
                         vectorTimeWindow,
+                        vectorTimeOffsets,
                         temporalContextTimeWindow,
                         DEBUGVIZ,
                         labelsOnly,
@@ -1445,6 +1451,7 @@ def main(
                         startIndex,
                         vectorsNumbers,
                         vectorTimeWindow,
+                        vectorTimeOffsets,
                         temporalContextTimeWindow,
                         DEBUGVIZ=DEBUGVIZ,
                         labelsOnly=labelsOnly,
@@ -1456,7 +1463,7 @@ def main(
                 for filename in files:
                     if filename.endswith('.MP4'):
                         videoPath = os.path.join(root, filename)
-                        startIndex = generateDataset(videoPath, outputDir, imageSize, frameInterval, startIndex, vectorsNumbers, vectorTimeWindow, temporalContextTimeWindow, DEBUGVIZ=DEBUGVIZ)
+                        startIndex = generateDataset(videoPath, outputDir, imageSize, frameInterval, startIndex, vectorsNumbers, vectorTimeWindow, vectorTimeOffsets, temporalContextTimeWindow, DEBUGVIZ=DEBUGVIZ)
     else:
         print(f"Error: {Path} is neither a file nor a directory.")
 
@@ -1469,14 +1476,23 @@ if __name__ == "__main__":
     outputDir = r"F:\Projects\Autopilot\dataset_output"
     frameInterval = 0 # interval between each frame sample, in seconds
     imageSize = (640, 360)  # Width, Height
-    vectorsNumbers = 12
-    vectorTimeWindow = 3.0 # seconds
+    
+    vectorTimeOffsets = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.85, 1.1, 1.35, 1.6, 2.3, 3.0]
+    
+    
+    
+    if vectorTimeOffsets:
+        vectorsNumbers = len(vectorTimeOffsets)
+        vectorTimeWindow = float(vectorTimeOffsets[-1])
+    else:
+        vectorsNumbers = 12
+        vectorTimeWindow = 3.0 # seconds
 
-    temporalContextTimeWindow = 0.1 # seconds
+    temporalContextTimeWindow = 0.1 # difference in seconds between the current frame and the previous frame used for temporal context.
 
     manualStartIndex = 0  # Starting index for dataset items, can be adjusted if resuming from a previous run
 
     debugViz = False
     numWorkers = 6
     
-    main(videoPath, outputDir, imageSize, frameInterval, vectorsNumbers, vectorTimeWindow, temporalContextTimeWindow, manualStartIndex, DEBUGVIZ=debugViz, numWorkers=numWorkers)
+    main(videoPath, outputDir, imageSize, frameInterval, vectorsNumbers, vectorTimeWindow, vectorTimeOffsets, temporalContextTimeWindow, manualStartIndex, DEBUGVIZ=debugViz, numWorkers=numWorkers)
