@@ -15,15 +15,36 @@ class ConvGNAct(nn.Module):
     def forward(self, x):
         return self.act(self.gn(self.conv(x)))
 
+class SEBlock(nn.Module):
+    def __init__(self, ch, reduction=8):
+        super().__init__()
+        reducedCh = max(1, ch // reduction)
+        self.pool = nn.AdaptiveAvgPool2d(1)
+        self.fc = nn.Sequential(
+            nn.Linear(ch, reducedCh),
+            nn.ReLU(inplace=True),
+            nn.Linear(reducedCh, ch),
+            nn.Sigmoid()
+        )
+
+    def forward(self, x):
+        b, c, _, _ = x.size()
+        y = self.pool(x).view(b, c)
+        y = self.fc(y).view(b, c, 1, 1)
+        return x * y
+
 class Residual(nn.Module):
-    def __init__(self, ch):
+    def __init__(self, ch, useSe=False):
         super().__init__()
         self.block = nn.Sequential(
             ConvGNAct(ch, ch, kernel=3, padding=1),
             ConvGNAct(ch, ch, kernel=3, padding=1)
         )
+        self.useSe = useSe
+        self.se = SEBlock(ch) if useSe else nn.Identity()
     def forward(self, x):
-        return x + self.block(x)
+        out = x + self.block(x)
+        return self.se(out)
 
 # -------------------------
 # Encoder: early fusion of two frames (6 channels)
@@ -34,27 +55,32 @@ class EarlyFusionEncoder(nn.Module):
         # Keep it compact but expressive
         self.stem = nn.Sequential(
             ConvGNAct(6, 32, kernel=7, stride=2, padding=3),  # (B,32,H/2,W/2)
-            Residual(32),
+            Residual(32, useSe=True),
             ConvGNAct(32, 64, stride=2)                       # (B,64,H/4,W/4)
         )
         self.layer1 = nn.Sequential(
-            Residual(64),
+            Residual(64, useSe=True),
             ConvGNAct(64, 128, stride=2)                      # (B,128,H/8,W/8)
         )
         self.layer2 = nn.Sequential(
-            Residual(128),
+            Residual(128, useSe=True),
             ConvGNAct(128, feat_dim, stride=2)                # (B,feat_dim,H/16,W/16)
         )
-        # small projection before decoder attention
-        self.proj = nn.Conv2d(feat_dim, feat_dim, kernel_size=1, bias=False)
+        # projections for multi-scale fusion at H/4
+        self.shallowProj = nn.Conv2d(64, feat_dim, kernel_size=1, bias=False)
+        self.deepProj = nn.Conv2d(feat_dim, feat_dim, kernel_size=1, bias=False)
+        self.fuse = ConvGNAct(feat_dim, feat_dim, kernel=3, padding=1)
 
     def forward(self, img_t, img_tm1):
         # expect inputs shape (B,3,H,W)
         x = torch.cat([img_t, img_tm1], dim=1)  # (B,6,H,W)
-        x = self.stem(x)
-        x = self.layer1(x)
-        x = self.layer2(x)
-        fmap = self.proj(x)  # (B, feat_dim, Hf, Wf)
+        x = self.stem(x)     # (B,64,H/4,W/4)
+        shallow = self.shallowProj(x)
+        x = self.layer1(x)   # (B,128,H/8,W/8)
+        x = self.layer2(x)   # (B,feat_dim,H/16,W/16)
+        deep = self.deepProj(x)
+        deepUp = F.interpolate(deep, size=shallow.shape[-2:], mode="bilinear", align_corners=False)
+        fmap = self.fuse(shallow + deepUp)  # (B, feat_dim, H/4, W/4)
         # Add vertical positional encoding
         H, W = fmap.shape[2:]
         yCoords = torch.zeros(1, 1, H, 1, device=fmap.device)
@@ -160,7 +186,7 @@ class TrajectoryModel(nn.Module):
                 nn.Linear(128, 2)   # predict speed, accel (auxiliary only)
             )
 
-        self.name = "TrajectoryModel_EarlyFusion_AttentiveGRU_V2"
+        self.name = "TrajectoryModel_EarlyFusion_AttentiveGRU_V3_H4_SE"
 
         # Input and output specs
         self.inputSpec = {
@@ -187,11 +213,13 @@ if __name__ == "__main__":
     batchSize = 2
     dummyImg1 = torch.randn(batchSize, 3, 360, 640)
     dummyImg2 = torch.randn(batchSize, 3, 360, 640)
-    model = TrajectoryModel(featDim=512, hiddenDim=512, predSteps=12, useAuxDyn=True)
+    model = TrajectoryModel(featDim=256, hiddenDim=512, predSteps=12, useAuxDyn=True)
     model.eval()
     
     with torch.no_grad():
         preds, aux, attn = model(dummyImg1, dummyImg2)
+
+    print("Model:", model.name)
         
     print("preds:", preds.shape)   # expect (B, 12, 2)
     if aux is not None:

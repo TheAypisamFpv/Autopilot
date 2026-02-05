@@ -658,13 +658,13 @@ if __name__ == "__main__":
         intervalSeconds = 0.25
 
     datasetMaxSize = None           # Maximum number of samples to load from the dataset (None = use all available)
-    numEpochs = 1000                # ~1 full pass at 10k samples/epoch for ~9.6M samples
+    numEpochs = 10000               # ~1 full pass at 10k samples/epoch for ~9.6M samples
     patience = 50                   # Early stopping patience (stop if no val improvement for this many epochs)
-    batchSize = 24                  # Number of samples per training batch (controls GPU memory usage)
+    batchSize = 16                  # Number of samples per training batch (controls GPU memory usage)
     gradAccumSteps = 1              # Gradient accumulation steps (simulates larger effective batch if >1)
     trainValSplit = 0.8             # Train/validation split ratio
-    trainSamplesPerEpoch = 10_000   # Random samples per epoch for fast iterations
-    valSamplesPerEpoch = (1 - trainValSplit)*trainSamplesPerEpoch      # Random val samples per epoch (20% of trainSamplesPerEpoch)
+    trainSamplesPerEpoch = 1_000    # Random samples per epoch for fast iterations
+    valSamplesPerEpoch = int((1 - trainValSplit)*trainSamplesPerEpoch)      # Random val samples per epoch (20% of trainSamplesPerEpoch)
     seed = 42                       # Base seed for reproducibility
     splitSeed = 42                  # Train/val split seed (keep fixed to avoid contamination)
     learningRate = 5e-5             # Optimized for transformer stability
