@@ -27,6 +27,7 @@ def processLabel(index: int, labelFilename: str, labelsDir: str, lateralThreshol
             lines = f.readlines()
 
         vectorsLine = next((line for line in lines if line.startswith("vectors : ")), None)
+        vectorTimesLine = next((line for line in lines if line.startswith("vectorTimes : ")), None)
         if not vectorsLine or "None" in vectorsLine:
             return indexStr, 'skip'
 
@@ -38,6 +39,22 @@ def processLabel(index: int, labelFilename: str, labelsDir: str, lateralThreshol
 
         if not vectors:
             return indexStr, 'skip'
+
+        firstDx, firstDy = vectors[0]
+        firstDistance = math.hypot(firstDx, firstDy)
+        if vectorTimesLine and "None" not in vectorTimesLine:
+            try:
+                timeParts = vectorTimesLine.split(" : ")[1].strip().split()
+                firstTime = float(timeParts[0]) if timeParts else 0.0
+            except (ValueError, IndexError):
+                firstTime = 0.0
+        else:
+            firstTime = 3.0 / max(1, len(vectors))
+
+        if firstTime > 0:
+            firstSpeed = firstDistance / firstTime
+            if firstSpeed < (1.0 / 3.6):
+                return indexStr, 'still'
 
         # Compute angles in degrees
         angles = [math.degrees(math.atan2(dy, dx)) for dx, dy in vectors]
@@ -220,6 +237,7 @@ def balanceDataset(
     rightTurnIndices: List[str] = []
     leftTurnIndices: List[str] = []
     sTurnIndices: List[str] = []
+    stillIndices: List[str] = []
 
     # Get all label files
     labelFiles = [f for f in os.listdir(labelsDir) if f.endswith('.txt')]
@@ -307,6 +325,8 @@ def balanceDataset(
                     leftTurnIndices.append(index)
                 elif category == 's':
                     sTurnIndices.append(index)
+                elif category == 'still':
+                    stillIndices.append(index)
                 submitNext()
 
     # Stop progress updater
@@ -333,6 +353,19 @@ def balanceDataset(
     selectedLeft = random.sample(leftTurnIndices, targetLeft)
     selectedS = random.sample(sTurnIndices, targetS)
 
+    if stillIndices:
+        random.shuffle(stillIndices)
+        for i, idx in enumerate(stillIndices):
+            bucket = i % 4
+            if bucket == 0:
+                selectedStraight.append(idx)
+            elif bucket == 1:
+                selectedRight.append(idx)
+            elif bucket == 2:
+                selectedLeft.append(idx)
+            else:
+                selectedS.append(idx)
+
     def sortLabelIndex(labelIndex: str):
         uuidPart, _, framePart = labelIndex.rpartition('_')
         if uuidPart and framePart.isdigit():
@@ -340,13 +373,25 @@ def balanceDataset(
         return (labelIndex, 0)
 
     selectedIndices = sorted(selectedStraight + selectedRight + selectedLeft + selectedS, key=sortLabelIndex)
+    selectedStraight = sorted(selectedStraight, key=sortLabelIndex)
+    selectedRight = sorted(selectedRight, key=sortLabelIndex)
+    selectedLeft = sorted(selectedLeft, key=sortLabelIndex)
+    selectedS = sorted(selectedS, key=sortLabelIndex)
+    stillIndices = sorted(stillIndices, key=sortLabelIndex)
 
     print("\nSaving balanced.json...")
     jsonPath = os.path.join(datasetDir, "balanced.json")
     with open(jsonPath, 'w') as outputFile:
-        json.dump({"keep": selectedIndices}, outputFile, indent=2)
+        json.dump({
+            "keep": selectedIndices,
+            "straight": selectedStraight,
+            "right": selectedRight,
+            "left": selectedLeft,
+            "s": selectedS,
+            "still": stillIndices,
+        }, outputFile, indent=2)
 
-    print(f"Balanced: {len(selectedIndices)} samples ({targetStraight} straight + {targetRight} right + {targetLeft} left + {targetS} S-turns)")
+    print(f"Balanced: {len(selectedIndices)} samples ({targetStraight} straight + {targetRight} right + {targetLeft} left + {targetS} S-turns + {len(stillIndices)} still)")
     print(f"Saved: {jsonPath}")
 
 

@@ -51,7 +51,7 @@ class DrivingDataset(Dataset):
                 self.labelsOnly = True
 
         # Load all label indices
-        allSamples = [f.split(".")[0] for f in os.listdir(self.labelsDir) if f.endswith(".txt")]
+        allSamples = sorted([f.split(".")[0] for f in os.listdir(self.labelsDir) if f.endswith(".txt")])
 
         # Check for balanced.json
         balancedJsonPath = os.path.join(datasetDir, "balanced.json")
@@ -76,7 +76,7 @@ class DrivingDataset(Dataset):
             return min(len(self.samples), self.maxSize)
         return len(self.samples)
 
-    def _parse_label_file(self, labelPath):
+    def _parseLabelFile(self, labelPath):
         vectors = None
         speed = 0.0
         videoPath = None
@@ -111,7 +111,7 @@ class DrivingDataset(Dataset):
 
         return vectors, speed, videoPath, prevFrameIndex, frameIndex
 
-    def _read_frames_from_video(self, videoPath, prevFrameIndex, frameIndex):
+    def _readFramesFromVideo(self, videoPath, prevFrameIndex, frameIndex):
         cap = cv2.VideoCapture(videoPath, cv2.CAP_MSMF)
         if not cap.isOpened():
             cap = cv2.VideoCapture(videoPath)
@@ -137,10 +137,10 @@ class DrivingDataset(Dataset):
     def __getitem__(self, idx):
         sampleId = self.samples[idx]
         labelPath = os.path.join(self.labelsDir, f"{sampleId}.txt")
-        vectors, speed, videoPath, prevFrameIndex, frameIndex = self._parse_label_file(labelPath)
+        vectors, speed, videoPath, prevFrameIndex, frameIndex = self._parseLabelFile(labelPath)
 
         if self.labelsOnly and videoPath is not None and prevFrameIndex is not None and frameIndex is not None:
-            prevImage, currentImage = self._read_frames_from_video(videoPath, prevFrameIndex, frameIndex)
+            prevImage, currentImage = self._readFramesFromVideo(videoPath, prevFrameIndex, frameIndex)
             if prevImage is None or currentImage is None:
                 raise RuntimeError(f"Failed to read frames from video: {videoPath} ({prevFrameIndex}, {frameIndex})")
         else:
@@ -186,7 +186,7 @@ def plotHistory(history, savePath):
     plt.close()
 
 
-def trajectory_loss_with_weights(pred, target, per_step_weights, reduction="mean", delta=1.0):
+def trajectoryLossWithWeights(pred, target, perStepWeights, reduction="mean", delta=1.0):
     """
     Computes weighted Huber loss across predicted trajectory waypoints.
 
@@ -202,7 +202,7 @@ def trajectory_loss_with_weights(pred, target, per_step_weights, reduction="mean
     """
     loss_fn = nn.SmoothL1Loss(reduction="none", beta=delta)
     raw = loss_fn(pred, target).mean(dim=-1)
-    weights = per_step_weights.to(raw.device).view(1, -1)
+    weights = perStepWeights.to(raw.device).view(1, -1)
     weighted = raw * weights
     if reduction == "mean":
         return weighted.mean()
@@ -211,7 +211,7 @@ def trajectory_loss_with_weights(pred, target, per_step_weights, reduction="mean
     return weighted
 
 
-def ADE_FDE(pred, target):
+def adeFde(pred, target):
     """
     Computes ADE (Average Displacement Error) and FDE (Final Displacement Error).
 
@@ -278,6 +278,8 @@ def trainModel(
     """
     print()
 
+    timeSteps = None
+
     if resumeModelPath:
         print(f"Resuming training from model: '{resumeModelPath}'...")
         runDir = os.path.dirname(resumeModelPath)
@@ -324,6 +326,8 @@ def trainModel(
             predSteps = loadedParams["predSteps"]
         if "intervalSeconds" in loadedParams:
             intervalSeconds = loadedParams["intervalSeconds"]
+        if "timeSteps" in loadedParams:
+            timeSteps = loadedParams["timeSteps"]
         if "deviceOverride" in loadedParams:
             deviceOverride = loadedParams["deviceOverride"]
 
@@ -360,7 +364,7 @@ def trainModel(
     useAmp = device.type == "cuda"
     scaler = GradScaler(device='cuda', enabled=useAmp)
 
-    transform = transforms.Compose([
+    trainTransform = transforms.Compose([
         transforms.Resize((360, 640)),  # Higher resolution
         transforms.ColorJitter(brightness=0.15, contrast=0.15, saturation=0.05, hue=0.02),
         transforms.RandomApply([transforms.GaussianBlur(kernel_size=(3, 3), sigma=(0.1, 1.0))], p=0.15),
@@ -369,49 +373,153 @@ def trainModel(
         transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
     ])
 
-    dataset = DrivingDataset(datasetDir, transform=transform, maxSize=datasetMaxSize, predSteps=predSteps)
-    totalSamples = len(dataset)
-    trainSize = int(trainValSplit * totalSamples)
-    valSize = totalSamples - trainSize
-    splitGenerator = torch.Generator().manual_seed(int(splitSeed))
-    trainDataset, valDataset = random_split(dataset, [trainSize, valSize], generator=splitGenerator)
+    valTransform = transforms.Compose([
+        transforms.Resize((360, 640)),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+    ])
+
+    baseDataset = DrivingDataset(datasetDir, transform=None, maxSize=datasetMaxSize, predSteps=predSteps)
+    trainDataset = DrivingDataset(datasetDir, transform=trainTransform, maxSize=datasetMaxSize, predSteps=predSteps)
+    valDataset = DrivingDataset(datasetDir, transform=valTransform, maxSize=datasetMaxSize, predSteps=predSteps)
+    totalSamples = len(baseDataset)
 
     numWorkers = 1
 
-    def get_train_subset_size():
+    balancedPath = os.path.join(datasetDir, "balanced.json")
+    balancedData = None
+    if os.path.exists(balancedPath):
+        with open(balancedPath, "r") as f:
+            balancedData = json.load(f)
+
+    classBuckets = {
+        "straight": balancedData.get("straight", []) if balancedData else [],
+        "right": balancedData.get("right", []) if balancedData else [],
+        "left": balancedData.get("left", []) if balancedData else [],
+        "s": balancedData.get("s", []) if balancedData else [],
+    }
+
+    sampleIndexMap = {sampleId: idx for idx, sampleId in enumerate(baseDataset.samples)}
+    classIndexBuckets = {key: [] for key in classBuckets}
+    indexToClass = {}
+    for className, sampleIds in classBuckets.items():
+        for sampleId in sampleIds:
+            idx = sampleIndexMap.get(sampleId)
+            if idx is not None:
+                classIndexBuckets[className].append(idx)
+                indexToClass[idx] = className
+
+    def buildStratifiedValIndices():
+        if not balancedData:
+            return []
+
+        totalCount = sum(len(v) for v in classIndexBuckets.values())
+        if totalCount == 0:
+            return []
+
+        if trainSamplesPerEpoch is not None:
+            targetValCount = max(1, int(round(trainSamplesPerEpoch * 0.2)))
+        else:
+            targetValCount = max(1, int(round(totalSamples * (1.0 - trainValSplit))))
+
+        rng = random.Random(seed)
+        valIndices = []
+        remainingSlots = targetValCount
+        remainders = []
+
+        for className, indices in classIndexBuckets.items():
+            proportion = len(indices) / totalCount if totalCount else 0.0
+            exactCount = proportion * targetValCount
+            classTarget = int(math.floor(exactCount))
+            remainders.append((exactCount - classTarget, className))
+            if classTarget > 0:
+                pickCount = min(classTarget, len(indices))
+                valIndices.extend(rng.sample(indices, pickCount))
+                remainingSlots -= pickCount
+
+        remainders.sort(reverse=True)
+        for _, className in remainders:
+            if remainingSlots <= 0:
+                break
+            indices = classIndexBuckets[className]
+            available = [i for i in indices if i not in valIndices]
+            if not available:
+                continue
+            pickCount = min(remainingSlots, len(available))
+            valIndices.extend(rng.sample(available, pickCount))
+            remainingSlots -= pickCount
+
+        if remainingSlots > 0:
+            allIndices = [i for i in range(totalSamples) if i not in valIndices]
+            if allIndices:
+                pickCount = min(remainingSlots, len(allIndices))
+                valIndices.extend(rng.sample(allIndices, pickCount))
+
+        valIndices.sort()
+        return valIndices
+
+    valIndices = buildStratifiedValIndices()
+    if not valIndices:
+        valIndices = []
+        if trainSamplesPerEpoch is not None:
+            targetValCount = max(1, int(round(trainSamplesPerEpoch * 0.2)))
+        else:
+            targetValCount = max(1, int(round(totalSamples * (1.0 - trainValSplit))))
+        rng = random.Random(seed)
+        valIndices = rng.sample(range(totalSamples), min(targetValCount, totalSamples))
+    valIndexSet = set(valIndices)
+    trainIndices = [i for i in range(totalSamples) if i not in valIndexSet]
+
+    def getTrainSubsetSize():
         if trainSamplesPerEpoch is None:
-            return len(trainDataset)
-        
-        return max(1, min(int(trainSamplesPerEpoch), len(trainDataset)))
+            return len(trainIndices)
 
-    def get_val_subset_size():
+        return max(1, min(int(trainSamplesPerEpoch), len(trainIndices)))
+
+    def getValSubsetSize():
         if valSamplesPerEpoch is None:
-            return len(valDataset)
+            return len(valIndices)
 
-        return max(1, min(int(valSamplesPerEpoch), len(valDataset)))
+        return max(1, min(int(valSamplesPerEpoch), len(valIndices)))
 
-    def build_train_loader(epoch):
-        if trainSamplesPerEpoch is None or trainSamplesPerEpoch >= len(trainDataset):
-            return DataLoader(trainDataset, batch_size=batchSize, shuffle=False, num_workers=numWorkers, pin_memory=True)
-        
-        subset_size = get_train_subset_size()
+    def getTrainSubsetIndices(epoch):
+        if trainSamplesPerEpoch is None or trainSamplesPerEpoch >= len(trainIndices):
+            return list(trainIndices)
+
+        subsetSize = getTrainSubsetSize()
         rng = random.Random(seed + epoch)
-        subset_indices = rng.sample(range(len(trainDataset)), subset_size)
-        subset = Subset(trainDataset, subset_indices)
+        return rng.sample(trainIndices, subsetSize)
+
+    def getValSubsetIndices(epoch):
+        if valSamplesPerEpoch is None or valSamplesPerEpoch >= len(valIndices):
+            return list(valIndices)
+
+        subsetSize = getValSubsetSize()
+        return list(valIndices[:subsetSize])
+
+    def buildTrainLoader(trainSubsetIndices):
+        subset = Subset(trainDataset, trainSubsetIndices)
         return DataLoader(subset, batch_size=batchSize, shuffle=False, num_workers=numWorkers, pin_memory=True)
 
-    def build_val_loader(epoch):
-        if valSamplesPerEpoch is None or valSamplesPerEpoch >= len(valDataset):
-            return DataLoader(valDataset, batch_size=batchSize, shuffle=False, num_workers=numWorkers, pin_memory=True)
-
-        subset_size = get_val_subset_size()
-        rng = random.Random(seed + 100000 + epoch)
-        subset_indices = rng.sample(range(len(valDataset)), subset_size)
-        subset = Subset(valDataset, subset_indices)
+    def buildValLoader(valSubsetIndices):
+        subset = Subset(valDataset, valSubsetIndices)
         return DataLoader(subset, batch_size=batchSize, shuffle=False, num_workers=numWorkers, pin_memory=True)
+
+    def computeClassCounts(indices):
+        counts = {"straight": 0, "right": 0, "left": 0, "s": 0}
+        for idx in indices:
+            className = indexToClass.get(idx)
+            if className in counts:
+                counts[className] += 1
+        return counts
 
     model = TrajectoryModel(
-        featDim=featDim, hiddenDim=hiddenDim, predSteps=predSteps, useAuxDyn=useAuxDyn, intervalSeconds=intervalSeconds
+        featDim=featDim,
+        hiddenDim=hiddenDim,
+        predSteps=predSteps,
+        useAuxDyn=useAuxDyn,
+        intervalSeconds=intervalSeconds,
+        timeSteps=timeSteps,
     ).to(device)
 
     if resumeModelPath:
@@ -442,6 +550,7 @@ def trainModel(
         "hiddenDim": hiddenDim,
         "predSteps": predSteps,
         "intervalSeconds": intervalSeconds,
+        "timeSteps": model.outputSpec.get("timeSteps") if hasattr(model, "outputSpec") else None,
         "deviceOverride": deviceOverride,
         "modelName": modelName,
     }
@@ -451,7 +560,7 @@ def trainModel(
     # Transformer-friendly optimizer
     optimizer = optim.AdamW(model.parameters(), lr=learningRate, weight_decay=0.01, betas=(0.9, 0.95), eps=1e-8)
 
-    trainSubsetSize = get_train_subset_size()
+    trainSubsetSize = getTrainSubsetSize()
     batchesPerEpoch = math.ceil(trainSubsetSize / batchSize)
     totalSteps = math.ceil((batchesPerEpoch * numEpochs) / max(1, gradAccumSteps))
     warmupSteps = min(2000, max(50, int(0.05 * totalSteps)))  # Longer warmup for transformer
@@ -466,7 +575,14 @@ def trainModel(
     globalStep = startEpoch * stepsPerEpoch
     scheduler = optim.lr_scheduler.LambdaLR(optimizer, lrLambda, last_epoch=globalStep - 1)
 
-    perStepWeights = torch.tensor([1.6, 1.3, 1.0, 0.8, 0.6, 0.5] + [0.4] * (predSteps - 6), dtype=torch.float32)  # Adjust for longer horizon
+    modelTimeSteps = model.outputSpec.get("timeSteps") if hasattr(model, "outputSpec") else None
+    if modelTimeSteps and len(modelTimeSteps) == predSteps:
+        timeStepsTensor = torch.tensor(modelTimeSteps, dtype=torch.float32)
+        maxT = float(timeStepsTensor.max()) if len(modelTimeSteps) else 1.0
+        perStepWeights = torch.exp(-timeStepsTensor / max(maxT, 1e-6)) * 1.5 + 0.3
+    else:
+        perStepWeights = torch.tensor([1.6, 1.3, 1.0, 0.8, 0.6, 0.5] + [0.4] * (predSteps - 6), dtype=torch.float32)
+    
     auxDynWeight = 0.02
     teacherForcingStart = 0.9
     teacherForcingEnd = 0.0
@@ -481,10 +597,21 @@ def trainModel(
         epochsNoImprove = len(history["val_loss"]) - history["val_loss"].index(bestValLoss) - 1
 
     for epoch in range(startEpoch, numEpochs):
-        trainLoader = build_train_loader(epoch)
+        trainSubsetIndices = getTrainSubsetIndices(epoch)
+        valSubsetIndices = getValSubsetIndices(epoch)
+        trainLoader = buildTrainLoader(trainSubsetIndices)
         model.train()
         runningLoss, runningADE, runningFDE = 0.0, 0.0, 0.0
         epochStartTime = time.time()
+
+        trainCounts = computeClassCounts(trainSubsetIndices)
+        valCounts = computeClassCounts(valSubsetIndices)
+        print(
+            f"Class distribution - Train: straight={trainCounts['straight']} right={trainCounts['right']} "
+            f"left={trainCounts['left']} s={trainCounts['s']} | "
+            f"Val: straight={valCounts['straight']} right={valCounts['right']} "
+            f"left={valCounts['left']} s={valCounts['s']}"
+        )
 
         tfRatio = (
             teacherForcingStart - (epoch / tfDecayEpochs) * (teacherForcingStart - teacherForcingEnd)
@@ -513,7 +640,7 @@ def trainModel(
                     print(f"CurrentImg stats: min={currentImg.min()}, max={currentImg.max()}, mean={currentImg.mean()}")
                     continue  # or break to stop training
                 
-                lossMain = trajectory_loss_with_weights(preds, labels, perStepWeights, reduction="mean")
+                lossMain = trajectoryLossWithWeights(preds, labels, perStepWeights, reduction="mean")
                 loss = lossMain
 
                 if useAuxDyn and auxOut is not None:
@@ -535,7 +662,7 @@ def trainModel(
                 accumSteps = 0
 
             runningLoss += lossMain.item() * batchSize
-            ade, fde = ADE_FDE(preds.detach(), labels)
+            ade, fde = adeFde(preds.detach(), labels)
             runningADE += ade * batchSize
             runningFDE += fde * batchSize
 
@@ -564,14 +691,22 @@ def trainModel(
 
         model.eval()
         valLoss, valADE, valFDE = 0.0, 0.0, 0.0
-        valLoader = build_val_loader(epoch)
+        valLoader = buildValLoader(valSubsetIndices)
 
         print('\n\nValidation Progress:')
 
         valStartTime = time.time()
+        bucketTotals = {"straight": 0, "right": 0, "left": 0, "s": 0}
+        bucketAde = {"straight": 0.0, "right": 0.0, "left": 0.0, "s": 0.0}
+        bucketFde = {"straight": 0.0, "right": 0.0, "left": 0.0, "s": 0.0}
+        valCursor = 0
+
         with torch.no_grad():
             for i, (prevImg, currentImg, dynamicData, labels) in enumerate(valLoader):
                 prevImg, currentImg, labels = prevImg.to(device), currentImg.to(device), labels.to(device)
+                batchSize = labels.size(0)
+                batchIndices = valSubsetIndices[valCursor:valCursor + batchSize]
+                valCursor += batchSize
                 with autocast(device_type='cuda', enabled=useAmp):
                     preds, _, _ = model(currentImg, prevImg, teacherForcing=False, tfRatio=0.0)
                     
@@ -580,11 +715,22 @@ def trainModel(
                         print(f"NaN detected in validation predictions at epoch {epoch+1}, batch {i}")
                         continue
                     
-                    lossMain = trajectory_loss_with_weights(preds, labels, perStepWeights, reduction="mean")
+                    lossMain = trajectoryLossWithWeights(preds, labels, perStepWeights, reduction="mean")
                 valLoss += lossMain.item() * labels.size(0)
-                ade, fde = ADE_FDE(preds, labels)
+                ade, fde = adeFde(preds, labels)
                 valADE += ade * labels.size(0)
                 valFDE += fde * labels.size(0)
+
+                diff = preds - labels
+                dists = torch.norm(diff, dim=-1)
+                adePerSample = dists.mean(dim=1).detach().cpu().numpy()
+                fdePerSample = dists[:, -1].detach().cpu().numpy()
+                for sampleIdx, sampleGlobalIdx in enumerate(batchIndices):
+                    className = indexToClass.get(sampleGlobalIdx)
+                    if className in bucketTotals:
+                        bucketTotals[className] += 1
+                        bucketAde[className] += float(adePerSample[sampleIdx])
+                        bucketFde[className] += float(fdePerSample[sampleIdx])
                 completion = (i + 1) / len(valLoader)
                 
                 batchesDone = i + 1
@@ -606,6 +752,18 @@ def trainModel(
 
         print(f"\nTrain Loss: {trainLoss:.4f} | "
               f"Val Loss: {valLoss:.4f} | ADE: {valADE:.4f} | FDE: {valFDE:.4f}")
+
+        bucketReport = []
+        for className in ["straight", "right", "left", "s"]:
+            count = bucketTotals[className]
+            if count > 0:
+                bucketReport.append(
+                    f"{className}: ADE={bucketAde[className] / count:.3f}, "
+                    f"FDE={bucketFde[className] / count:.3f} ({count})"
+                )
+            else:
+                bucketReport.append(f"{className}: n/a (0)")
+        print("Val per-bucket: " + " | ".join(bucketReport))
 
         historyDf = pd.DataFrame(history)
         historyDf.to_csv(os.path.join(runDir, "training_history.csv"), index=False)

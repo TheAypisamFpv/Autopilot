@@ -3,7 +3,7 @@ import os
 import random
 import numpy as np
 
-def parseVectorLine(line):
+def parseVectorLine(line, timeList=None):
     """Parses the vector line and returns a list of dictionaries."""
     vectors = []
     try:
@@ -15,14 +15,30 @@ def parseVectorLine(line):
 
         for i, vec_str in enumerate(vector_strings):
             x_str, y_str = vec_str.split(',')
+            if timeList and i < len(timeList):
+                timeValue = float(timeList[i])
+            else:
+                timeValue = (i + 1) * time_increment
             vectors.append({
                 'x': float(x_str),
                 'y': float(y_str),
-                'time': (i + 1) * time_increment
+                'time': timeValue
             })
     except (IndexError, ValueError) as e:
         print(f"Error parsing vector line: {line.strip()} - {e}")
     return vectors
+
+
+def parseVectorTimes(line):
+    """Parses the vectorTimes line and returns a list of floats."""
+    try:
+        times_str = line.split(' : ')[1].strip()
+        if times_str == "None":
+            return []
+        return [float(t) for t in times_str.split(' ') if t]
+    except (IndexError, ValueError) as e:
+        print(f"Error parsing vectorTimes line: {line.strip()} - {e}")
+        return []
 
 def parseSpeed(line):
     """Parses the speed line and returns a float."""
@@ -108,6 +124,7 @@ def viewRandomItem(datasetDir):
 
         # Read metadata
         vectors = []
+        vectorTimes = []
         speed, acceleration, turnRate = 0, 0, 0
         videoPath = None
         prevFrameIndex = None
@@ -115,7 +132,12 @@ def viewRandomItem(datasetDir):
         with open(metadataPath, 'r') as f:
             for line in f:
                 if line.startswith('vectors'):
-                    vectors = parseVectorLine(line)
+                    vectors = parseVectorLine(line, vectorTimes if vectorTimes else None)
+                elif line.startswith('vectorTimes'):
+                    vectorTimes = parseVectorTimes(line)
+                    if vectors:
+                        for i, timeValue in enumerate(vectorTimes[:len(vectors)]):
+                            vectors[i]['time'] = timeValue
                 elif line.startswith('speed'):
                     speed = parseSpeed(line)
                 elif line.startswith('acceleration'):
