@@ -1,14 +1,14 @@
-# Custom Multi-Modal
+# Vision-Only Autonomous Vehicle model
 
-An advanced vehicle trajectory prediction system leveraging deep learning to forecast vehicle path over a 3-second horizon from Vision only.
+A vision-only CNN-Transformer trajectory prediction model that uses two consecutive front-camera frames and forecasts future vehicle motion over an ~3-second horizon using non-uniform `vectorTimes`.
 
-<a href="https://x.com/THEAYPISAMFPV/status/1982888965666681123">Video demo on 𝕏</a>
+<a href="https://x.com/THEAYPISAMFPV/status/1982888965666681123">Video demo on 𝕏</a> (legacy Early Fusion + Attentive GRU model)
 
 
 ## Overview
 
-This project implements a vision-based network that predicts the future trajectory of the vehicle using:
-- 2 RGB frames from a front-facing camera (360x640 pixels, both frames are separated by a 0.1s time interval for temporal context)
+This project implements a vision-based network that predicts the future trajectory of the vehicle from:
+- Two RGB frames from a front-facing camera (360x640, separated by 0.1s for temporal context)
 
 The model outputs 12 two-dimensional vectors representing the predicted travel path (x, y) in the 2D road plane over a 3-second interval, using a non-uniform timing schedule (0.1s x 6, 0.25s x 4, 0.7s x 2).
 
@@ -28,13 +28,13 @@ The network uses a motion-aware encoder with a lightweight transformer decoder:
 
 - **Motion Backbone + FPN Fusion**: Two shared CNN backbones extract multi-scale features from the current and previous frames. Per-scale features are concatenated with their temporal differences, fused through 1x1 convolutions, and combined with a top-down FPN-style merge.
 
-- **Spatial Coordinate Channels**: Normalized x/y coordinate channels are appended to the fused feature map to provide explicit spatial context.
+- **Spatial Coordinate Channels**: Normalized `x`/`y` frame-space coordinate channels are appended to the fused feature map to provide explicit spatial context.
 
-- **Vector Transformer Decoder**: A transformer decoder with learned query embeddings and a time-step MLP predicts the future displacement vectors in parallel.
+- **Vector Transformer Decoder**: A transformer decoder with learned query embeddings and a `vectorTimes` MLP predicts future displacement vectors in parallel and exposes cross-attention maps for visualization.
 
 - **Optional Auxiliary Head**: A small MLP on pooled features can predict auxiliary dynamics (2D output).
 
-By default, the model predicts 12 vectors over a 3-second horizon with a non-uniform timing schedule (0.1s x 6, 0.25s x 4, 0.7s x 2). You can override the time steps at runtime. *(model in training, so changing the time steps has an unknown impact on performance)*
+By default, the model predicts 12 vectors over a 3-second horizon with a non-uniform timing schedule (0.1s x 6, 0.25s x 4, 0.7s x 2). You can override `vectorTimes` at runtime. *(Model is in training; changing `vectorTimes` may affect performance.)*
 
 
 ## Dataset
@@ -62,7 +62,7 @@ you can find more details about the license here:
 
 ### Old way (GoPro with GPS)
 
-The original dataset consists of processed frames from .mp4 video files captured with a GoPro Hero 5 camera, paired with its GPS data. The data generation process involves:
+The original dataset consisted of processed frames from .mp4 video files captured with a GoPro Hero 5, paired with its GPS data. The data generation process involves:
 
 1. Extracting GPS data (position, speed, timestamps) from the GoPro's metadata
 2. Processing video frames at specific intervals (640x360 pixel resolution)
@@ -95,24 +95,31 @@ Each sample in the dataset includes the image pair and the ground truth trajecto
 
 ## Training
 
-### Current run in training: **run13**
-100 hours of training as of now at epoch 20.
+### Current run in training: **run21**
+Run21 uses the latest model (`TrajectoryModel_MotionFpn_Transformer_V1`) on NVIDIA's dataset.
 
-The new architecture reduced parameters from 23M to 8.8M while achieving better performance at equivalent training time.
+### Latest working model: **run13**
+The latest model that achieved good performance is `TrajectoryModel_EarlyFusion_AttentiveGRU`.
+
+Here are the training curves for run13:
 
 ![run13 Training Loss](training/run13/Losschart_up_to_20.png)
 
 ![run13 ADE & FDE Metrics](training/run13/ADE&FDEchart_up_to_20.png)
 
-Check out a video demonstration of the model in action (at epoch 19):
+- ***ADE** (Average Displacement Error) is the mean L2 distance between predicted and ground-truth points across all time steps.*
 
-<a href="https://x.com/THEAYPISAMFPV/status/1982888965666681123">View the video demonstration on 𝕏</a>
+- ***FDE** (Final Displacement Error) is the L2 distance at the final predicted step.*
+
+Check out a legacy video demonstration of the model in action (at epoch 19):
+
+<a href="https://x.com/THEAYPISAMFPV/status/1982888965666681123">View the legacy demo on 𝕏</a>
 
 ## Q&A
 
 ### Will the model's weights be available?
 
-**No**, i'm not planning on releasing them for now (they are shitty anyway). If a good model is trained, then i'll consider it.
+**No**, I am not planning to release them for now.
 
 ### How can I help?
-By sending me a better GPU for AI training then an rtx2060 6G, thanks :)
+By sending me a better GPU for AI training than an RTX 2060 6G, thanks :)

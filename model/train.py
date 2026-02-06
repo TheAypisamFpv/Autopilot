@@ -78,6 +78,7 @@ class DrivingDataset(Dataset):
 
     def _parseLabelFile(self, labelPath):
         vectors = None
+        vectorTimes = None
         speed = 0.0
         videoPath = None
         prevFrameIndex = None
@@ -94,6 +95,15 @@ class DrivingDataset(Dataset):
                         while len(vectorsList) < self.predSteps:
                             vectorsList.append([0.0, 0.0])
                         vectors = np.array(vectorsList[:self.predSteps], dtype=np.float32)
+                elif line.startswith("vectorTimes"):
+                    timesLine = line.strip().split(" : ")[1]
+                    if timesLine == "None":
+                        vectorTimes = np.zeros((self.predSteps,), dtype=np.float32)
+                    else:
+                        timesList = [float(v) for v in timesLine.split(" ") if v]
+                        while len(timesList) < self.predSteps:
+                            timesList.append(0.0)
+                        vectorTimes = np.array(timesList[:self.predSteps], dtype=np.float32)
                 elif line.startswith("speed"):
                     speed = float(line.strip().split(" : ")[1])
                 elif line.startswith("video"):
@@ -109,7 +119,10 @@ class DrivingDataset(Dataset):
         if vectors is None:
             vectors = np.zeros((self.predSteps, 2), dtype=np.float32)
 
-        return vectors, speed, videoPath, prevFrameIndex, frameIndex
+        if vectorTimes is None:
+            vectorTimes = np.zeros((self.predSteps,), dtype=np.float32)
+
+        return vectors, vectorTimes, speed, videoPath, prevFrameIndex, frameIndex
 
     def _readFramesFromVideo(self, videoPath, prevFrameIndex, frameIndex):
         cap = cv2.VideoCapture(videoPath, cv2.CAP_MSMF)
@@ -137,7 +150,7 @@ class DrivingDataset(Dataset):
     def __getitem__(self, idx):
         sampleId = self.samples[idx]
         labelPath = os.path.join(self.labelsDir, f"{sampleId}.txt")
-        vectors, speed, videoPath, prevFrameIndex, frameIndex = self._parseLabelFile(labelPath)
+        vectors, vectorTimes, speed, videoPath, prevFrameIndex, frameIndex = self._parseLabelFile(labelPath)
 
         if self.labelsOnly and videoPath is not None and prevFrameIndex is not None and frameIndex is not None:
             prevImage, currentImage = self._readFramesFromVideo(videoPath, prevFrameIndex, frameIndex)
@@ -155,7 +168,7 @@ class DrivingDataset(Dataset):
 
         dynamicData = torch.tensor([speed], dtype=self.dtype)
 
-        return prevImage, currentImage, dynamicData, torch.from_numpy(vectors).to(self.dtype)
+        return prevImage, currentImage, dynamicData, torch.from_numpy(vectors).to(self.dtype), torch.from_numpy(vectorTimes).to(self.dtype)
 
 
 def getRunDir(baseDir="training"):
@@ -229,6 +242,34 @@ def adeFde(pred, target):
     return ade, fde
 
 
+def inferVectorTimesFromLabels(labelsDir):
+    """
+    Infer non-uniform vector times from the first label file that contains vectorTimes.
+    Returns None if no valid vectorTimes are found.
+    """
+    if not os.path.isdir(labelsDir):
+        return None
+
+    labelFiles = sorted([f for f in os.listdir(labelsDir) if f.endswith(".txt")])
+    for name in labelFiles:
+        labelPath = os.path.join(labelsDir, name)
+        try:
+            with open(labelPath, "r") as f:
+                for line in f:
+                    if line.startswith("vectorTimes"):
+                        timesLine = line.strip().split(" : ")[1]
+                        if timesLine == "None":
+                            break
+                        timesList = [float(v) for v in timesLine.split(" ") if v]
+                        if timesList:
+                            return timesList
+                        break
+        except Exception:
+            continue
+
+    return None
+
+
 def trainModel(
     datasetDir,
     numEpochs=60,
@@ -245,8 +286,8 @@ def trainModel(
     useAuxDyn=False,
     featDim=256,
     hiddenDim=256,
-    predSteps=12,
-    intervalSeconds=0.25,
+    predSteps=None,
+    intervalSeconds=None,
     deviceOverride=None,
     resumeModelPath=None,
 ):
@@ -271,14 +312,14 @@ def trainModel(
         useAuxDyn (bool): Whether to use auxiliary dynamics head.
         featDim (int): Feature dimension for model.
         hiddenDim (int): Hidden dimension for model.
-        predSteps (int): Number of prediction steps.
-        intervalSeconds (float): Time interval between prediction steps.
+        predSteps (int or None): Number of prediction steps (inferred from labels if None).
+        intervalSeconds (float or None): Time interval between prediction steps (inferred from labels if None).
         deviceOverride (str or None): Device to use ('cpu' or 'cuda'), or None for auto-detect.
         resumeModelPath (str or None): Path to a previously trained model to resume training from.
     """
     print()
 
-    timeSteps = None
+    vectorTimes = None
 
     if resumeModelPath:
         print(f"Resuming training from model: '{resumeModelPath}'...")
@@ -326,8 +367,8 @@ def trainModel(
             predSteps = loadedParams["predSteps"]
         if "intervalSeconds" in loadedParams:
             intervalSeconds = loadedParams["intervalSeconds"]
-        if "timeSteps" in loadedParams:
-            timeSteps = loadedParams["timeSteps"]
+        if "vectorTimes" in loadedParams:
+            vectorTimes = loadedParams["vectorTimes"]
         if "deviceOverride" in loadedParams:
             deviceOverride = loadedParams["deviceOverride"]
 
@@ -356,6 +397,18 @@ def trainModel(
     if not os.path.exists(datasetDir):
         raise FileNotFoundError(f"Dataset directory '{datasetDir}' does not exist.")
 
+    inferred = inferVectorTimesFromLabels(os.path.join(datasetDir, "labels"))
+    if inferred:
+        vectorTimes = inferred
+        print(f"Using vectorTimes from labels: {vectorTimes}")
+        predSteps = len(vectorTimes)
+        intervalSeconds = float(vectorTimes[0]) if vectorTimes else intervalSeconds
+    else:
+        if predSteps is None:
+            predSteps = 12
+        if intervalSeconds is None:
+            intervalSeconds = 0.25
+
     device = (
         torch.device(deviceOverride)
         if deviceOverride
@@ -365,10 +418,7 @@ def trainModel(
     scaler = GradScaler(device='cuda', enabled=useAmp)
 
     trainTransform = transforms.Compose([
-        transforms.Resize((360, 640)),  # Higher resolution
-        transforms.ColorJitter(brightness=0.15, contrast=0.15, saturation=0.05, hue=0.02),
-        transforms.RandomApply([transforms.GaussianBlur(kernel_size=(3, 3), sigma=(0.1, 1.0))], p=0.15),
-        transforms.RandomAffine(degrees=2.5, translate=(0.02, 0.02), scale=(0.98, 1.02)),
+        transforms.Resize((360, 640)),
         transforms.ToTensor(),
         transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
     ])
@@ -519,7 +569,7 @@ def trainModel(
         predSteps=predSteps,
         useAuxDyn=useAuxDyn,
         intervalSeconds=intervalSeconds,
-        timeSteps=timeSteps,
+        vectorTimes=vectorTimes,
     ).to(device)
 
     if resumeModelPath:
@@ -550,7 +600,7 @@ def trainModel(
         "hiddenDim": hiddenDim,
         "predSteps": predSteps,
         "intervalSeconds": intervalSeconds,
-        "timeSteps": model.outputSpec.get("timeSteps") if hasattr(model, "outputSpec") else None,
+        "vectorTimes": model.vectorTimes,
         "deviceOverride": deviceOverride,
         "modelName": modelName,
     }
@@ -575,13 +625,13 @@ def trainModel(
     globalStep = startEpoch * stepsPerEpoch
     scheduler = optim.lr_scheduler.LambdaLR(optimizer, lrLambda, last_epoch=globalStep - 1)
 
-    modelTimeSteps = model.outputSpec.get("timeSteps") if hasattr(model, "outputSpec") else None
-    if modelTimeSteps and len(modelTimeSteps) == predSteps:
-        timeStepsTensor = torch.tensor(modelTimeSteps, dtype=torch.float32)
-        maxT = float(timeStepsTensor.max()) if len(modelTimeSteps) else 1.0
-        perStepWeights = torch.exp(-timeStepsTensor / max(maxT, 1e-6)) * 1.5 + 0.3
+    modelVectorTimes = model.vectorTimes
+    if modelVectorTimes and len(modelVectorTimes) == predSteps:
+        vectorTimesTensor = torch.tensor(modelVectorTimes, dtype=torch.float32)
+        maxT = float(vectorTimesTensor.max()) if len(modelVectorTimes) else 1.0
+        perStepWeightsBase = torch.exp(-vectorTimesTensor / max(maxT, 1e-6)) * 1.5 + 0.3
     else:
-        perStepWeights = torch.tensor([1.6, 1.3, 1.0, 0.8, 0.6, 0.5] + [0.4] * (predSteps - 6), dtype=torch.float32)
+        perStepWeightsBase = torch.tensor([1.6, 1.3, 1.0, 0.8, 0.6, 0.5] + [0.4] * (predSteps - 6), dtype=torch.float32)
     
     auxDynWeight = 0.02
     teacherForcingStart = 0.9
@@ -624,12 +674,21 @@ def trainModel(
         optimizer.zero_grad()
         accumSteps = 0
 
-        for i, (prevImg, currentImg, dynamicData, labels) in enumerate(trainLoader):
-            prevImg, currentImg, labels = prevImg.to(device), currentImg.to(device), labels.to(device)
+        for i, (prevImg, currentImg, dynamicData, labels, vectorTimesBatch) in enumerate(trainLoader):
+            prevImg = prevImg.to(device)
+            currentImg = currentImg.to(device)
+            labels = labels.to(device)
+            vectorTimesBatch = vectorTimesBatch.to(device)
             batchSize = labels.size(0)
 
+            perStepWeights = perStepWeightsBase
+            if vectorTimesBatch.numel() and torch.any(vectorTimesBatch > 0):
+                meanTimes = vectorTimesBatch.mean(dim=0)
+                maxT = float(meanTimes.max()) if meanTimes.numel() else 1.0
+                perStepWeights = torch.exp(-meanTimes / max(maxT, 1e-6)) * 1.5 + 0.3
+
             with autocast(device_type='cuda', enabled=useAmp):
-                preds, auxOut, _ = model(currentImg, prevImg, gtTraj=labels, teacherForcing=True, tfRatio=tfRatio)
+                preds, auxOut, _ = model(currentImg, prevImg, gtTraj=labels, teacherForcing=True, tfRatio=tfRatio, vectorTimes=vectorTimesBatch)
                 
                 # Check for NaN in predictions
                 if torch.isnan(preds).any():
@@ -702,13 +761,22 @@ def trainModel(
         valCursor = 0
 
         with torch.no_grad():
-            for i, (prevImg, currentImg, dynamicData, labels) in enumerate(valLoader):
-                prevImg, currentImg, labels = prevImg.to(device), currentImg.to(device), labels.to(device)
+            for i, (prevImg, currentImg, dynamicData, labels, vectorTimesBatch) in enumerate(valLoader):
+                prevImg = prevImg.to(device)
+                currentImg = currentImg.to(device)
+                labels = labels.to(device)
+                vectorTimesBatch = vectorTimesBatch.to(device)
                 batchSize = labels.size(0)
                 batchIndices = valSubsetIndices[valCursor:valCursor + batchSize]
                 valCursor += batchSize
+
+                perStepWeights = perStepWeightsBase
+                if vectorTimesBatch.numel() and torch.any(vectorTimesBatch > 0):
+                    meanTimes = vectorTimesBatch.mean(dim=0)
+                    maxT = float(meanTimes.max()) if meanTimes.numel() else 1.0
+                    perStepWeights = torch.exp(-meanTimes / max(maxT, 1e-6)) * 1.5 + 0.3
                 with autocast(device_type='cuda', enabled=useAmp):
-                    preds, _, _ = model(currentImg, prevImg, teacherForcing=False, tfRatio=0.0)
+                    preds, _, _ = model(currentImg, prevImg, teacherForcing=False, tfRatio=0.0, vectorTimes=vectorTimesBatch)
                     
                     # Check for NaN in validation predictions
                     if torch.isnan(preds).any():
@@ -792,29 +860,6 @@ if __name__ == "__main__":
     PLEASE MAKE SURE TO USE A CORRECT DATASET (like image size, time window, etc.)
     """
     datasetPath = r"F:\Projects\Autopilot\dataset_output\output_NVIDIA_12_3.0_0.1_framesize640x360"
-    # Parse dataset path to extract parameters
-    basename = os.path.basename(datasetPath)
-    if basename.startswith('output_'):
-        parts = basename.split('_')
-        if len(parts) >= 3:
-            numVectors = int(parts[-4])
-            vectorTimeWindow = float(parts[-3])
-            intervalSeconds = vectorTimeWindow / numVectors
-            # temporalContext = float(parts[3])
-            # imageSize = parts[4].removeprefix("framesize").split("x")
-            # imageSize = (int(imageSize[1]), int(imageSize[0]))  # (height, width)
-            
-            predSteps = numVectors
-            print(f"Parsed from dataset path: numVectors={numVectors}, vectorTimeWindow={vectorTimeWindow}, intervalSeconds={intervalSeconds}")
-        else:
-            print("Warning: Could not parse dataset path, using defaults")
-            predSteps = 12
-            intervalSeconds = 0.25
-    else:
-        print("Warning: Dataset path does not start with 'output_', using defaults")
-        predSteps = 12
-        intervalSeconds = 0.25
-
     datasetMaxSize = None           # Maximum number of samples to load from the dataset (None = use all available)
     numEpochs = 10000               # ~1 full pass at 10k samples/epoch for ~9.6M samples
     patience = 50                   # Early stopping patience (stop if no val improvement for this many epochs)
@@ -847,7 +892,5 @@ if __name__ == "__main__":
         useAuxDyn=useAuxDyn,
         featDim=featDim,
         hiddenDim=hiddenDim,
-        predSteps=predSteps,
-        intervalSeconds=intervalSeconds,
         resumeModelPath=resumeModelPath,
     )

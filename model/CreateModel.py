@@ -167,22 +167,51 @@ class MotionFpnEncoder(nn.Module):
 # -------------------------
 # Decoder: lightweight transformer over spatial memory
 # -------------------------
+class TransformerDecoderLayerWithAttn(nn.Module):
+    def __init__(self, dModel, numHeads, dimFeedforward=1024, dropout=0.1, activation="gelu"):
+        super().__init__()
+        self.selfAttn = nn.MultiheadAttention(dModel, numHeads, dropout=dropout, batch_first=True)
+        self.crossAttn = nn.MultiheadAttention(dModel, numHeads, dropout=dropout, batch_first=True)
+        self.linear1 = nn.Linear(dModel, dimFeedforward)
+        self.linear2 = nn.Linear(dimFeedforward, dModel)
+        self.dropout = nn.Dropout(dropout)
+        self.dropout1 = nn.Dropout(dropout)
+        self.dropout2 = nn.Dropout(dropout)
+        self.dropout3 = nn.Dropout(dropout)
+        self.norm1 = nn.LayerNorm(dModel)
+        self.norm2 = nn.LayerNorm(dModel)
+        self.norm3 = nn.LayerNorm(dModel)
+        self.activation = nn.GELU() if activation == "gelu" else nn.ReLU()
+
+    def forward(self, tgt, memory):
+        attnSelf, selfWeights = self.selfAttn(tgt, tgt, tgt, need_weights=True, average_attn_weights=False)
+        tgt = self.norm1(tgt + self.dropout1(attnSelf))
+
+        attnCross, crossWeights = self.crossAttn(tgt, memory, memory, need_weights=True, average_attn_weights=False)
+        tgt = self.norm2(tgt + self.dropout2(attnCross))
+
+        ff = self.linear2(self.dropout(self.activation(self.linear1(tgt))))
+        tgt = self.norm3(tgt + self.dropout3(ff))
+        return tgt, selfWeights, crossWeights
+
+
 class VectorTransformerDecoder(nn.Module):
-    def __init__(self, featDim=194, hiddenDim=256, predSteps=12, numHeads=4, numLayers=2, dropout=0.1, timeSteps=None):
+    def __init__(self, featDim=194, hiddenDim=256, predSteps=12, numHeads=4, numLayers=2, dropout=0.1, vectorTimes=None):
         super().__init__()
         self.predSteps = predSteps
         self.memoryProj = nn.Conv2d(featDim, hiddenDim, kernel_size=1, bias=False)
         self.memoryNorm = nn.LayerNorm(hiddenDim)
 
-        decoderLayer = nn.TransformerDecoderLayer(
-            d_model=hiddenDim,
-            nhead=numHeads,
-            dim_feedforward=hiddenDim * 4,
-            dropout=dropout,
-            batch_first=True,
-            activation="gelu",
-        )
-        self.decoder = nn.TransformerDecoder(decoderLayer, num_layers=numLayers)
+        self.layers = nn.ModuleList([
+            TransformerDecoderLayerWithAttn(
+                dModel=hiddenDim,
+                numHeads=numHeads,
+                dimFeedforward=hiddenDim * 4,
+                dropout=dropout,
+                activation="gelu",
+            )
+            for _ in range(numLayers)
+        ])
 
         self.queryEmbed = nn.Parameter(torch.randn(predSteps, hiddenDim))
         self.timeMlp = nn.Sequential(
@@ -191,9 +220,9 @@ class VectorTransformerDecoder(nn.Module):
             nn.Linear(hiddenDim, hiddenDim)
         )
 
-        if timeSteps is None:
-            timeSteps = [float(i + 1) for i in range(predSteps)]
-        self.register_buffer("timeSteps", torch.tensor(timeSteps, dtype=torch.float32), persistent=False)
+        if vectorTimes is None:
+            vectorTimes = [float(i + 1) for i in range(predSteps)]
+        self.register_buffer("vectorTimes", torch.tensor(vectorTimes, dtype=torch.float32), persistent=False)
 
         self.outHead = nn.Sequential(
             nn.Linear(hiddenDim, hiddenDim // 2),
@@ -201,23 +230,54 @@ class VectorTransformerDecoder(nn.Module):
             nn.Linear(hiddenDim // 2, 2)
         )
 
-    def forward(self, featMap, timeSteps=None):
+    def forward(self, featMap, vectorTimes=None):
         batchSize = featMap.size(0)
+        height, width = featMap.shape[-2], featMap.shape[-1]
         memory = self.memoryProj(featMap)
         memory = memory.flatten(2).permute(0, 2, 1)
         memory = self.memoryNorm(memory)
 
         query = self.queryEmbed.unsqueeze(0).expand(batchSize, -1, -1)
-        if timeSteps is None:
-            timeSteps = self.timeSteps
+        if vectorTimes is None:
+            vectorTimesTensor = self.vectorTimes.to(featMap.device)
         else:
-            timeSteps = torch.tensor(timeSteps, dtype=torch.float32, device=featMap.device)
-        timeEmbed = self.timeMlp(timeSteps.view(1, -1, 1))
+            if isinstance(vectorTimes, torch.Tensor):
+                vectorTimesTensor = vectorTimes.to(device=featMap.device, dtype=torch.float32)
+            else:
+                vectorTimesTensor = torch.tensor(vectorTimes, dtype=torch.float32, device=featMap.device)
+
+        if vectorTimesTensor.dim() == 1:
+            if vectorTimesTensor.numel() > self.predSteps:
+                vectorTimesTensor = vectorTimesTensor[:self.predSteps]
+            elif vectorTimesTensor.numel() < self.predSteps:
+                padCount = self.predSteps - vectorTimesTensor.numel()
+                padVal = vectorTimesTensor[-1] if vectorTimesTensor.numel() > 0 else torch.tensor(0.0, device=featMap.device)
+                vectorTimesTensor = torch.cat([vectorTimesTensor, padVal.repeat(padCount)])
+            timeEmbed = self.timeMlp(vectorTimesTensor.view(1, -1, 1))
+        elif vectorTimesTensor.dim() == 2:
+            if vectorTimesTensor.size(1) > self.predSteps:
+                vectorTimesTensor = vectorTimesTensor[:, :self.predSteps]
+            elif vectorTimesTensor.size(1) < self.predSteps:
+                padCount = self.predSteps - vectorTimesTensor.size(1)
+                padVal = vectorTimesTensor[:, -1:] if vectorTimesTensor.size(1) > 0 else torch.zeros((batchSize, 1), device=featMap.device)
+                vectorTimesTensor = torch.cat([vectorTimesTensor, padVal.repeat(1, padCount)], dim=1)
+            timeEmbed = self.timeMlp(vectorTimesTensor.unsqueeze(-1))
+        else:
+            raise ValueError(f"vectorTimes must be 1D or 2D, got shape {tuple(vectorTimesTensor.shape)}")
         query = query + timeEmbed
 
-        decoded = self.decoder(query, memory)
+        decoded = query
+        lastCrossWeights = None
+        for layer in self.layers:
+            decoded, _, lastCrossWeights = layer(decoded, memory)
+
         preds = self.outHead(decoded)
         attnMaps = [None for _ in range(self.predSteps)]
+        if lastCrossWeights is not None:
+            crossAvg = lastCrossWeights.mean(dim=1)
+            if crossAvg.dim() == 3 and crossAvg.size(-1) == height * width:
+                crossAvg = crossAvg.view(batchSize, self.predSteps, height, width)
+                attnMaps = [crossAvg[:, i] for i in range(self.predSteps)]
         return preds, attnMaps
 
 
@@ -233,15 +293,15 @@ class TrajectoryModel(nn.Module):
         useAuxDyn=False,
         intervalSeconds=0.25,
         totalSeconds=3.0,
-        timeSteps=None,
+        vectorTimes=None,
         baseChannels=32,
     ):
         super().__init__()
-        if timeSteps is None:
+        if vectorTimes is None:
             totalSeconds = float(totalSeconds) if totalSeconds is not None else float(intervalSeconds * predSteps)
-            timeSteps = buildNonUniformTimeOffsets(predSteps, totalSeconds)
+            vectorTimes = buildNonUniformTimeOffsets(predSteps, totalSeconds)
 
-        self.timeSteps = timeSteps
+        self.vectorTimes = vectorTimes
         self.encoder = MotionFpnEncoder(featDim=featDim, baseChannels=baseChannels)
         self.decoder = VectorTransformerDecoder(
             featDim=featDim + 2,
@@ -250,7 +310,7 @@ class TrajectoryModel(nn.Module):
             numHeads=4,
             numLayers=2,
             dropout=0.1,
-            timeSteps=timeSteps,
+            vectorTimes=vectorTimes,
         )
 
         self.use_aux_dyn = useAuxDyn
@@ -272,14 +332,13 @@ class TrajectoryModel(nn.Module):
         }
         self.outputSpec = {
             'num_vectors': predSteps,
-            'intervalSeconds': float(timeSteps[0]) if timeSteps else intervalSeconds,
-            'totalSeconds': float(timeSteps[-1]) if timeSteps else float(predSteps * intervalSeconds),
-            'timeSteps': [float(t) for t in timeSteps] if timeSteps else None,
+            'intervalSeconds': float(vectorTimes[0]) if vectorTimes else intervalSeconds,
+            'totalSeconds': float(vectorTimes[-1]) if vectorTimes else float(predSteps * intervalSeconds),
         }
 
-    def forward(self, imgT, imgTm1, gtTraj=None, teacherForcing=False, tfRatio=0.9, timeSteps=None):
+    def forward(self, imgT, imgTm1, gtTraj=None, teacherForcing=False, tfRatio=0.9, vectorTimes=None):
         fmap = self.encoder(imgT, imgTm1)
-        preds, attnMaps = self.decoder(fmap, timeSteps=timeSteps)
+        preds, attnMaps = self.decoder(fmap, vectorTimes=vectorTimes)
         aux = None
         if self.use_aux_dyn:
             aux = self.aux(fmap)

@@ -454,7 +454,7 @@ def visualizeFrame(
     attnMap,
     currentTelemetry,
     interval,
-    timeSteps,
+    vectorTimes,
     intrinsics,
     extrinsics,
     carWidth,
@@ -586,7 +586,7 @@ def visualizeFrame(
         firstVector = predictions[0]
         firstVectorNp = firstVector.cpu().numpy() if isinstance(firstVector, torch.Tensor) else np.asarray(firstVector)
         distance = math.sqrt(float(firstVectorNp[0]) ** 2 + float(firstVectorNp[1]) ** 2)
-        stepSeconds = timeSteps[0] if timeSteps else interval
+        stepSeconds = vectorTimes[0] if vectorTimes else interval
         requestedSpeedMs = distance / max(stepSeconds, 1e-6)
         requestedSpeedKph = requestedSpeedMs * 3.6
         speedText = f"Predicted target speed: {requestedSpeedMs:.1f} m/s ({requestedSpeedKph:.1f} km/h)"
@@ -626,7 +626,7 @@ def runModel(modelPath, videoPath, calibrationRoot, temporalContextTimeWindow=0.
         hiddenDim = trainingParams.get('hiddenDim', 1024)
         predSteps = trainingParams.get('predSteps', 12)
         intervalSeconds = trainingParams.get('intervalSeconds', 0.25)
-        timeSteps = trainingParams.get('timeSteps', None)
+        vectorTimes = trainingParams.get('vectorTimes', None)
 
         modelName = trainingParams.get('modelName', 'unknown_model')
         availableModelName = TrajectoryModel(featDim=featDim, hiddenDim=hiddenDim, predSteps=predSteps).to(device).name
@@ -640,15 +640,16 @@ def runModel(modelPath, videoPath, calibrationRoot, temporalContextTimeWindow=0.
         warnings.warn(f"{paramsPath} not found, using defaults (This may cause errors if model architecture mismatches.)\n")
         featDim, hiddenDim, predSteps = 512, 1024, 12
         intervalSeconds = 0.25
-        timeSteps = None
+        vectorTimes = None
 
-    model = TrajectoryModel(featDim=featDim, hiddenDim=hiddenDim, predSteps=predSteps, intervalSeconds=intervalSeconds, timeSteps=timeSteps).to(device)
+    model = TrajectoryModel(featDim=featDim, hiddenDim=hiddenDim, predSteps=predSteps, intervalSeconds=intervalSeconds, vectorTimes=vectorTimes).to(device)
     model.load_state_dict(torch.load(modelPath, map_location=device))
     model.eval()
 
     predSteps = model.outputSpec.get('num_vectors', 12) if hasattr(model, 'outputSpec') else 12
     interval = model.outputSpec.get('intervalSeconds', intervalSeconds) if hasattr(model, 'outputSpec') else intervalSeconds
-    timeSteps = model.outputSpec.get('timeSteps', timeSteps) if hasattr(model, 'outputSpec') else timeSteps
+    if vectorTimes is None:
+        vectorTimes = model.vectorTimes
     inputImageSize = model.inputSpec.get('image_size', (270, 480)) if hasattr(model, 'inputSpec') else (270, 480)
 
     print(f"\nModel specs - Input Size: {inputImageSize} -> Output PredSteps: {predSteps}, Interval: {interval}s\n")
@@ -800,8 +801,8 @@ def runModel(modelPath, videoPath, calibrationRoot, temporalContextTimeWindow=0.
 
                 if currentFrameTimestampUs is not None and currentEgoState is not None:
                     trajStart = time.perf_counter()
-                    if timeSteps:
-                        targetTimesUs = [currentFrameTimestampUs + int(offset * 1e6) for offset in timeSteps]
+                    if vectorTimes:
+                        targetTimesUs = [currentFrameTimestampUs + int(offset * 1e6) for offset in vectorTimes]
                     else:
                         intervalUs = int(interval * 1e6)
                         targetTimesUs = [currentFrameTimestampUs + intervalUs * (i + 1) for i in range(predSteps)]
@@ -828,7 +829,7 @@ def runModel(modelPath, videoPath, calibrationRoot, temporalContextTimeWindow=0.
                     lastAttnMap,
                     currentTelemetry,
                     interval,
-                    timeSteps,
+                    vectorTimes,
                     intrinsics,
                     extrinsics,
                     carWidth,
