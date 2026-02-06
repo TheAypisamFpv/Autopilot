@@ -15,90 +15,65 @@
 \maketitle
 
 \section{Overview}
-The TrajectoryModel is a neural network designed for predicting vehicle trajectories based on two input images (current and previous frames). It combines an early fusion encoder with an attentive GRU-based decoder, optionally including an auxiliary dynamics prediction head. The encoder includes vertical positional encoding to provide spatial priors for attention. The model processes input images of shape (B, 3, 270, 480), where B is the batch size, and outputs predicted trajectories of shape (B, 6, 2) for 6 future time steps, along with attention maps and optional auxiliary dynamics predictions.
+The TrajectoryModel predicts future vehicle trajectories from two RGB images (current and previous frames). It uses a motion-aware encoder that extracts multi-scale features from each frame, fuses them with temporal differences, and then applies a lightweight transformer decoder to predict the future displacement vectors. An optional auxiliary head can predict a 2D dynamics vector from pooled features. The default input resolution is (B, 3, 360, 640), and the default output is (B, 12, 2) with non-uniform time offsets spanning 3 seconds.
 
 \section{Model Components}
 
 \subsection{Utility Blocks}
 \begin{itemize}
-    \item \textbf{ConvGNAct}: A convolutional block consisting of a 2D convolution, group normalization, and ReLU activation.
-        \begin{itemize}
-            \item Parameters: input channels, output channels, kernel size (default 3), stride (default 1), padding (default 1), group normalization groups (default 32).
-            \item Forward: Applies convolution, group normalization, and ReLU activation sequentially.
-        \end{itemize}
-    \item \textbf{Residual}: A residual block with two ConvGNAct layers.
-        \begin{itemize}
-            \item Parameters: Number of channels.
-            \item Forward: Adds the input to the output of two ConvGNAct layers.
-        \end{itemize}
+    \item \textbf{ConvGNAct}: A 2D convolution followed by group normalization and SiLU activation.
+    \item \textbf{SEBlock}: Squeeze-and-Excitation block that rescales channels using a global pooling and two-layer MLP.
+    \item \textbf{Residual}: Two ConvGNAct layers with a residual connection, optionally followed by SE attention.
 \end{itemize}
 
-\subsection{EarlyFusionEncoder}
-The encoder fuses two input RGB images (current and previous, each of shape (B, 3, H, W)) into a single feature map.
+\subsection{MotionBackbone}
+A shared-weight CNN extracts features from each frame at two spatial scales.
 \begin{itemize}
-    \item \textbf{Input}: Concatenated images of shape (B, 6, H, W).
+    \item \textbf{Input}: Image of shape (B, 3, H, W).
     \item \textbf{Architecture}:
         \begin{itemize}
-            \item \textit{Stem}: ConvGNAct (6 to 32 channels, kernel=7, stride=2), Residual (32), ConvGNAct (32 to 64, stride=2).
-            \item \textit{Layer1}: Residual (64), ConvGNAct (64 to 128, stride=2).
-            \item \textit{Layer2}: Residual (128), ConvGNAct (128 to feat\_dim, stride=2).
-            \item \textit{Projection}: 1x1 convolution (feat\_dim to feat\_dim).
-            \item \textit{Vertical Positional Encoding}: Adds a 1-channel positional encoding based on vertical position, with values from -1 to 1 in the useful vertical range (35\% to 84\% from top).
+            \item \textit{Stem}: ConvGNAct (3 to base, kernel=5, stride=2), Residual (base, SE enabled).
+            \item \textit{Stage1}: ConvGNAct (base to 2\,base, stride=2), Residual (2\,base, SE enabled).
+            \item \textit{Stage2}: ConvGNAct (2\,base to 3\,base, stride=2), Residual (3\,base, SE enabled). Output is 1/8 resolution.
+            \item \textit{Stage3}: ConvGNAct (3\,base to 4\,base, stride=2), Residual (4\,base, SE enabled). Output is 1/16 resolution.
         \end{itemize}
-    \item \textbf{Output}: Feature map of shape (B, feat\_dim + 1, H/16, W/16).
+    \item \textbf{Output}: Feature maps at 1/8 and 1/16 resolution.
 \end{itemize}
 
-\subsection{SpatialAttentionDecoder}
-This module computes spatial attention over the encoder's feature map, conditioned on the decoder's hidden state.
+\subsection{MotionFpnEncoder}
+Fuses motion cues by comparing features between the current and previous frames.
 \begin{itemize}
-    \item \textbf{Parameters}: Feature dimension (feat\_dim + 1), hidden dimension (hidden\_dim).
-    \item \textbf{Components}:
-        \begin{itemize}
-            \item Key and value convolutions: 1x1 convolutions on the feature map.
-            \item Query fully connected layer: Maps hidden state to feat\_dim.
-        \end{itemize}
-    \item \textbf{Forward}:
-        \begin{itemize}
-            \item Computes keys and values from the feature map, reshapes to (B, HW, feat\_dim).
-            \item Generates query from hidden state, computes attention logits with scaling.
-            \item Applies softmax to obtain attention weights, computes context vector.
-        \end{itemize}
-    \item \textbf{Output}: Context vector (B, feat\_dim) and attention map (B, 1, H, W).
+    \item \textbf{Per-scale fusion}: Concatenate current features, previous features, and their difference, then apply a 1x1 convolution to a shared feature dimension.
+    \item \textbf{Top-down fusion}: Upsample the 1/16 features and add to the 1/8 features, followed by a ConvGNAct fusion block.
+    \item \textbf{Coordinate channels}: Append normalized x/y coordinate maps in the range [-1, 1].
+    \item \textbf{Output}: Feature map of shape (B, feat\_dim + 2, H/8, W/8). For 360x640 input, this is 45x80.
 \end{itemize}
 
-\subsection{AttentiveGRUDecoder}
-An autoregressive decoder using a GRUCell to predict future trajectory points.
+\subsection{VectorTransformerDecoder}
+The decoder predicts displacement vectors in parallel using a transformer decoder.
 \begin{itemize}
-    \item \textbf{Parameters}: Feature dimension (feat\_dim + 1), hidden dimension (hidden\_dim), prediction steps (pred\_steps=6).
-    \item \textbf{Components}:
-        \begin{itemize}
-            \item Initial hidden and cell state mappings from pooled features.
-            \item GRUCell with input size (2 + feat\_dim) and hidden size (hidden\_dim).
-            \item Output head: Linear layers to predict delta x, y for each step.
-        \end{itemize}
-    \item \textbf{Forward}:
-        \begin{itemize}
-            \item Initializes hidden state from pooled feature map.
-            \item Iteratively applies attention, GRUCell, and output head for each time step.
-            \item Supports teacher forcing with ground truth trajectories.
-        \end{itemize}
-    \item \textbf{Output}: Predicted trajectories (B, pred\_steps, 2) and attention maps.
+    \item \textbf{Memory}: The encoder feature map is projected with a 1x1 convolution and flattened to a sequence of length H\,W, followed by LayerNorm.
+    \item \textbf{Queries}: A learned query embedding of length pred\_steps is added to a time-step MLP embedding.
+    \item \textbf{Transformer decoder}: A lightweight decoder (default 2 layers, 4 heads) attends to the spatial memory.
+    \item \textbf{Output head}: Two-layer MLP that predicts (x, y) per step.
+    \item \textbf{Output}: Predicted trajectories of shape (B, pred\_steps, 2). Attention maps are not explicitly returned (filled with None).
 \end{itemize}
 
 \subsection{TrajectoryModel}
-The full model integrates the encoder and decoder, with an optional auxiliary dynamics head.
+The full model integrates the encoder, decoder, and optional auxiliary head.
 \begin{itemize}
-    \item \textbf{Parameters}: Feature dimension (default 256), hidden dimension (default 256), prediction steps (default 6), use auxiliary dynamics (default False).
+    \item \textbf{Parameters}: Feature dimension (feat\_dim), hidden dimension (hidden\_dim), prediction steps (pred\_steps=12), optional auxiliary dynamics (default False).
     \item \textbf{Components}:
         \begin{itemize}
-            \item EarlyFusionEncoder (outputs feat\_dim + 1 channels with positional encoding).
-            \item AttentiveGRUDecoder (uses feat\_dim + 1).
-            \item Optional auxiliary head: Predicts speed and acceleration from pooled features (uses feat\_dim + 1).
+            \item MotionFpnEncoder (outputs feat\_dim + 2 channels with coordinate maps).
+            \item VectorTransformerDecoder (uses feat\_dim + 2).
+            \item Optional auxiliary head: AdaptiveAvgPool2d -> MLP (feat\_dim + 2 to 128 to 2).
         \end{itemize}
-    \item \textbf{Forward}: Processes two input images, returns predictions, auxiliary outputs (if enabled), and attention maps.
+    \item \textbf{Time offsets}: If not provided, non-uniform offsets are generated for a 3-second horizon (0.1s x 6, 0.25s x 4, 0.7s x 2).
+    \item \textbf{Forward}: Returns predicted trajectories, optional auxiliary output, and a placeholder attention list.
 \end{itemize}
 
 \section{Summary}
-The TrajectoryModel is a compact yet expressive architecture for trajectory prediction, leveraging early fusion for input processing, vertical positional encoding for spatial priors, spatial attention for feature interaction, and an autoregressive GRU for sequential prediction. Its modular design allows for flexibility in applications requiring vehicle trajectory forecasting.
+The TrajectoryModel combines motion-aware multi-scale encoding with a transformer decoder to predict future vehicle trajectories from image pairs. The design is lightweight, supports non-uniform time steps, and optionally produces a compact auxiliary dynamics output.
 
 \end{document}

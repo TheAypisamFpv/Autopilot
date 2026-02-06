@@ -1,46 +1,93 @@
-graph TD
-    A[Input_Images_img_t_img_tm1_B_3_270_480] --> B[Concatenate_B_6_270_480]
+flowchart LR
+  %% TrajectoryModel: MotionFpnEncoder + Transformer decoder
+  subgraph Inputs
+    imgT["Frame t"]
+    imgTm1["Frame t-0.1s"]
+  end
 
-    subgraph EarlyFusionEncoder
-        B --> C[ConvGNAct_6_to_32_k7_s2]
-        C --> D[Residual_32]
-        D --> E[ConvGNAct_32_to_64_s2]
-        E --> F[Residual_64]
-        F --> G[ConvGNAct_64_to_128_s2]
-        G --> H[Residual_128]
-        H --> I[ConvGNAct_128_to_feat_dim_s2]
-        I --> J[Projection_1x1_Conv_feat_dim]
-        J --> K[Add_Vertical_Positional_Encoding]
-        K --> L[Feature_Map_B_feat_dim+1_H16_W16]
+  subgraph Encoder["MotionFpnEncoder"]
+    subgraph BackboneT["MotionBackbone (Frame t)"]
+      t_stem["Stem: Conv5x5 + Residual"]
+      t_stage1["Stage1: Downsample + Residual"]
+      t_stage2["Stage2: Downsample + Residual"]
+      t_stage3["Stage3: Downsample + Residual"]
     end
-
-    subgraph AttentiveGRUDecoder
-        L --> M[SpatialAttentionDecoder]
-        M --> N[Initial_h_from_pooled_features]
-        N --> O[GRUCell_Loop_pred_steps]
-        O --> P[GRUCell_Input_prev_xy_context]
-        P --> Q[GRUCell_Update_h]
-        Q --> R[Output_Head_Predict_delta_xy]
-        R --> S[Accumulate_Next_Position]
-        S --> T{Teacher_Forcing?}
-        T -->|Yes| U[Use_GT_prev_xy]
-        T -->|No| V[Use_Predicted_prev_xy]
-        U --> W[Loop_Back]
-        V --> W
-        W --> O
-        O --> X[Predictions_B_pred_steps_2]
-        M --> Y[Attention_Maps_per_step]
+    subgraph BackboneTm1["MotionBackbone (Frame t-0.1s)"]
+      tm1_stem["Stem: Conv5x5 + Residual"]
+      tm1_stage1["Stage1: Downsample + Residual"]
+      tm1_stage2["Stage2: Downsample + Residual"]
+      tm1_stage3["Stage3: Downsample + Residual"]
     end
+    shared["Shared weights"]
+    feat8T["Features t (1/8)"]
+    feat16T["Features t (1/16)"]
+    feat8Tm1["Features t-0.1s (1/8)"]
+    feat16Tm1["Features t-0.1s (1/16)"]
+    motion8["Concat: feat8T, feat8Tm1, (feat8T - feat8Tm1)"]
+    motion16["Concat: feat16T, feat16Tm1, (feat16T - feat16Tm1)"]
+    fuse8["1x1 Conv fuse8"]
+    fuse16["1x1 Conv fuse16"]
+    up16["Upsample fused16"]
+    fpn["FPN fuse (3x3 Conv)"]
+    coords["Add x/y coord channels"]
+  end
 
-    subgraph Auxiliary_Dynamics_Optional
-        L --> Z[AdaptiveAvgPool2d_1x1]
-        Z --> AA[Flatten]
-        AA --> BB[Linear_feat_dim+1_to_128]
-        BB --> CC[ReLU]
-        CC --> DD[Linear_128_to_2]
-        DD --> EE[Aux_Output_Speed_Accel]
-    end
+  subgraph Decoder["VectorTransformerDecoder"]
+    memProj["1x1 Conv memory proj"]
+    memFlat["Flatten HxW > tokens"]
+    memNorm["LayerNorm"]
+    query["Learned queries
+    +
+    time embedding"]
+    xformer["Transformer decoder"]
+    outHead["MLP > (dx, dy)"]
+  end
 
-    X --> FF[Output_Predictions]
-    Y --> GG[Output_Attention_Maps]
-    EE --> HH[Output_Aux_Dynamics]
+  subgraph Outputs
+    traj["Predicted trajectory vectors"]
+    attn["Attention maps (placeholder)"]
+    aux["Aux dynamics (optional)"]
+  end
+
+  Inputs ~~~ shared
+
+  imgT --> t_stem
+  t_stem --> t_stage1
+  t_stage1 --> t_stage2
+  t_stage2 --> t_stage3
+
+  imgTm1 --> tm1_stem
+  tm1_stem --> tm1_stage1
+  tm1_stage1 --> tm1_stage2
+  tm1_stage2 --> tm1_stage3
+
+  t_stage2 --> feat8T
+  t_stage3 --> feat16T
+  tm1_stage2 --> feat8Tm1
+  tm1_stage3 --> feat16Tm1
+
+  shared -.-> BackboneT
+  shared -.-> BackboneTm1
+
+  feat8T --> motion8
+  feat8Tm1 --> motion8
+  feat16T --> motion16
+  feat16Tm1 --> motion16
+
+  motion8 --> fuse8
+  motion16 --> fuse16
+  fuse16 --> up16
+  fuse8 --> fpn
+  up16 --> fpn
+  fpn --> coords
+
+  coords --> memProj
+  memProj --> memFlat
+  memFlat --> memNorm
+  memNorm --> xformer
+  query --> xformer
+  xformer --> outHead
+  outHead --> traj
+  xformer --> attn
+
+  coords -.-> aux

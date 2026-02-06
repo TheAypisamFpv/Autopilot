@@ -1,49 +1,66 @@
 # Custom Multi-Modal
 
-An advanced vehicle trajectory prediction system leveraging deep learning to forecast vehicle path over a 3-second horizon from visual input.
+An advanced vehicle trajectory prediction system leveraging deep learning to forecast vehicle path over a 3-second horizon from Vision only.
 
-<a href="https://x.com/THEAYPISAMFPV/status/1982888965666681123">View the video demonstration on 𝕏</a>
+<a href="https://x.com/THEAYPISAMFPV/status/1982888965666681123">Video demo on 𝕏</a>
 
 
 ## Overview
 
 This project implements a vision-based network that predicts the future trajectory of the vehicle using:
-- 2 RGB images from a front-facing camera (360x640 pixels, both images are separated by a 0.1s time interval for temporal context)
+- 2 RGB frames from a front-facing camera (360x640 pixels, both frames are separated by a 0.1s time interval for temporal context)
 
-The model outputs 12 two-dimensional vectors representing the predicted travel path (x, y) in the 2D road plane over a 3-second interval (0.25s per vector).
+The model outputs 12 two-dimensional vectors representing the predicted travel path (x, y) in the 2D road plane over a 3-second interval, using a non-uniform timing schedule (0.1s x 6, 0.25s x 4, 0.7s x 2).
 
 ## Data Visualization
 
-The following visualization shows an example of processed GPS data used in the legacy GoPro + GPS dataset for training and evaluation:
+The following visualization shows examples of processed pose-derived trajectory data from the NVIDIA PhysicalAI-Autonomous-Vehicles dataset used for training and evaluation:
 
-![GPS Data Visualization](images/visualization/dataVis.png)
+| Frames View | Top-Down |
+|:---:|:---:|
+| ![NVIDIA Dataset Visualization (Left)](images/visualization/dataVisAFrames.png) | ![NVIDIA Dataset Visualization (Right)](images/visualization/dataVisATopDown.png) |
 
 ## Model Architecture
 
-The network uses an early fusion encoder-decoder architecture that processes two consecutive RGB images concatenated as input, followed by an attentive GRU decoder for trajectory prediction:
+![Model architecture diagram](model\architecture\trajectory_model_arch.svg)
 
-- **Early Fusion Encoder**: Concatenates the two input images (6 channels) and processes them through hierarchical convolutional layers with residual connections
-- **Attentive GRU Decoder**: Uses spatial attention to focus on relevant image regions while autoregressively predicting displacement vectors
+The network uses a motion-aware encoder with a lightweight transformer decoder:
 
-Detailed architecture documentation can be found in:
-- [LaTeX description](model/architecture/model_architecture.tex)
-- [Mermaid diagram](model/architecture/modelArchitecture.mmd)
+- **Motion Backbone + FPN Fusion**: Two shared CNN backbones extract multi-scale features from the current and previous frames. Per-scale features are concatenated with their temporal differences, fused through 1x1 convolutions, and combined with a top-down FPN-style merge.
 
-To generate a PDF from the LaTeX file, compile `model_architecture.tex` with a LaTeX distribution (e.g., using pdflatex).
+- **Spatial Coordinate Channels**: Normalized x/y coordinate channels are appended to the fused feature map to provide explicit spatial context.
 
+- **Vector Transformer Decoder**: A transformer decoder with learned query embeddings and a time-step MLP predicts the future displacement vectors in parallel.
+
+- **Optional Auxiliary Head**: A small MLP on pooled features can predict auxiliary dynamics (2D output).
+
+By default, the model predicts 12 vectors over a 3-second horizon with a non-uniform timing schedule (0.1s x 6, 0.25s x 4, 0.7s x 2). You can override the time steps at runtime. *(model in training, so changing the time steps has an unknown impact on performance)*
 
 
 ## Dataset
 
 ### New way (NVIDIA PhysicalAI-Autonomous-Vehicles)
 
-The current recommended dataset source is NVIDIA’s PhysicalAI-Autonomous-Vehicles dataset:
-https://huggingface.co/datasets/nvidia/PhysicalAI-Autonomous-Vehicles
+The current dataset used is NVIDIA’s PhysicalAI-Autonomous-Vehicles dataset:
+*https://huggingface.co/datasets/nvidia/PhysicalAI-Autonomous-Vehicles*
 
-**License/Terms of Use:** This dataset is governed by the NVIDIA Autonomous Vehicle Dataset License Agreement. You must accept the terms on the dataset page before downloading or using it. Do not redistribute the dataset or derivatives, and comply with all restrictions in the license:
-https://huggingface.co/datasets/nvidia/PhysicalAI-Autonomous-Vehicles/blob/main/LICENSE.pdf
+The data generation process for this dataset is similar in spirit to the old GoPro pipeline, but uses the dataset's per-frame ego-pose and timestamps to build the trajectory labels:
 
-### Old way (GoPro + GPS)
+1. Sample consecutive RGB frames separated by 0.1s (same as the model input).
+2. Read the ego vehicle pose for each frame (position + orientation) from the dataset.
+3. For each input pair, collect future ego poses over the next 3 seconds.
+4. Convert those future poses into local displacements relative to the current frame (vehicle-centric x/y).
+5. Downsample or resample to 12 vectors using the non-uniform timing schedule (0.1s x 6, 0.25s x 4, 0.7s x 2).
+
+This produces the same kind of 12-step (x, y) displacement targets the model expects, but derived from the dataset's provided pose stream instead of GPS.
+
+#### **License/Terms of Use**
+This dataset is governed by the NVIDIA Autonomous Vehicle Dataset License Agreement. This means that i can't share any statistics or details about how models trained on this dataset perform, sorry :/
+you can find more details about the license here:
+*https://huggingface.co/datasets/nvidia/PhysicalAI-Autonomous-Vehicles/blob/main/LICENSE.pdf*.
+
+
+### Old way (GoPro with GPS)
 
 The original dataset consists of processed frames from .mp4 video files captured with a GoPro Hero 5 camera, paired with its GPS data. The data generation process involves:
 
