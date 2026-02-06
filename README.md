@@ -22,7 +22,7 @@ The following visualization shows examples of processed pose-derived trajectory 
 
 ## Model Architecture
 
-![Model architecture diagram](model\architecture\trajectory_model_arch.svg)
+![Model architecture diagram](model/architecture/trajectory_model_arch.svg)
 
 The network uses a motion-aware encoder with a lightweight transformer decoder:
 
