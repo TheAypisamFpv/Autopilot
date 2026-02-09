@@ -2,7 +2,9 @@
 
 A vision-only CNN-Transformer trajectory prediction model that uses two consecutive front-camera frames and forecasts future vehicle motion over an ~3-second horizon using non-uniform `vectorTimes`.
 
-[![Video demo on 𝕏](images/visualization/Autopilot_TrajectoryModel_EarlyFusion_AttentiveGRU_epoch19_timelapse.gif)](https://x.com/THEAYPISAMFPV/status/1982888965666681123) (legacy Early Fusion + Attentive GRU model)
+[![Video demo on 𝕏](images/visualization/Autopilot_TrajectoryModel_EarlyFusion_AttentiveGRU_epoch19_timelapse.gif)](https://x.com/THEAYPISAMFPV/status/1982888965666681123)
+
+(legacy Early Fusion + Attentive GRU model)
 
 
 ## Overview
