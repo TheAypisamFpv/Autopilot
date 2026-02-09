@@ -194,6 +194,11 @@ def drawProjectedRibbonFromRig(overlay, rigPoints, intrinsics, extrinsics, downs
     if len(rigPoints) < 2:
         return
 
+    # Calculate speeds in km/h for each segment
+    numSegments = len(rigPoints) - 1
+    timeIncrement = 3.0 / numSegments if numSegments > 0 else 0
+    speeds = [np.linalg.norm(rigPoints[i+1][:2] - rigPoints[i][:2]) / timeIncrement * 3.6 if timeIncrement > 0 else 0 for i in range(numSegments)]
+
     count = len(rigPoints)
     dirs = [None] * (count - 1)
     for i in range(count - 1):
@@ -287,14 +292,20 @@ def drawProjectedRibbonFromRig(overlay, rigPoints, intrinsics, extrinsics, downs
             [int(round(r0[0])), int(round(r0[1]))],
         ], dtype=np.int32)
         cv2.fillConvexPoly(overlay, quad, color, lineType=cv2.LINE_AA)
-        joints.append((l1, r1))
+        joints.append((l1, r1, speeds[i]))
 
     jointThickness = max(1, min(jointThicknessMax, int(round(widthMeters * vecToPixel * jointThicknessScale))))
-    for l1, r1 in joints:
+    for l1, r1, speedKmh in joints:
         if l1 is not None and r1 is not None:
             jointStart = (int(round(l1[0])), int(round(l1[1])))
             jointEnd = (int(round(r1[0])), int(round(r1[1])))
-            cv2.line(overlay, jointStart, jointEnd, (0, 0, 0, jointAlpha), jointThickness, cv2.LINE_AA)
+            if speedKmh < 2:
+                lineColor = (255, 255, 255, jointAlpha)
+                lineThickness = jointThickness * 2
+            else:
+                lineColor = (0, 0, 0, jointAlpha)
+                lineThickness = jointThickness
+            cv2.line(overlay, jointStart, jointEnd, lineColor, lineThickness, cv2.LINE_AA)
 
 
 def drawProjectedCarCuboid(overlay, intrinsics, extrinsics, downscale, carWidth, carLength, rearAxleToCenter):
@@ -372,14 +383,16 @@ def drawTopDownCanvas(vectors, color, thickness):
     return canvas
 
 
-def drawTopDownRibbon(vectors, color, widthPx):
+def drawTopDownRibbon(vectors, color, widthPx, carLength=None):
     canvas = np.zeros((trajectoryCanvasHeight, trajectoryCanvasWidth, 4), dtype=np.uint8)
-    originPoint = np.array([trajectoryCanvasWidth // 2, trajectoryCanvasHeight - vectorThickness], dtype=float)
+    offset = int(carLength * vecToPixel) if carLength else 0
+    originPoint = np.array([trajectoryCanvasWidth // 2, trajectoryCanvasHeight - vectorThickness - offset], dtype=float)
 
     if vectors is None or len(vectors) == 0:
         return canvas
 
     vectorsNp = vectors.cpu().numpy() if isinstance(vectors, torch.Tensor) else np.asarray(vectors, dtype=float)
+    timeIncrement = 3.0 / len(vectorsNp) if len(vectorsNp) > 0 else 0
     currentPoint = originPoint
     halfWidth = max(1.0, widthPx / 2.0)
     joints = []
@@ -390,16 +403,19 @@ def drawTopDownRibbon(vectors, color, widthPx):
         segment = np.array([dx, dy], dtype=float)
         segLen = float(np.linalg.norm(segment))
         if segLen < 1e-6:
-            continue
+            segLen = 1e-6  # Ensure minimum length for drawing
+
+        # Calculate speed in km/h
+        speedKmh = math.sqrt(vec[0]**2 + vec[1]**2) / timeIncrement * 3.6 if timeIncrement > 0 else 0
 
         nextPoint = currentPoint + segment
         normal = np.array([-segment[1], segment[0]], dtype=float) / segLen
-        offset = normal * halfWidth
+        offset_vec = normal * halfWidth
 
-        p0l = currentPoint + offset
-        p0r = currentPoint - offset
-        p1l = nextPoint + offset
-        p1r = nextPoint - offset
+        p0l = currentPoint + offset_vec
+        p0r = currentPoint - offset_vec
+        p1l = nextPoint + offset_vec
+        p1r = nextPoint - offset_vec
 
         quad = np.array([
             [int(round(p0l[0])), int(round(p0l[1]))],
@@ -408,24 +424,30 @@ def drawTopDownRibbon(vectors, color, widthPx):
             [int(round(p0r[0])), int(round(p0r[1]))],
         ], dtype=np.int32)
         cv2.fillConvexPoly(canvas, quad, (*color, 255), lineType=cv2.LINE_AA)
-        joints.append((p1l, p1r))
+        joints.append((p1l, p1r, speedKmh))
 
         currentPoint = nextPoint
 
     jointThickness = max(1, min(jointThicknessMax, int(round(widthPx * jointThicknessScale))))
-    for p1l, p1r in joints:
+    for p1l, p1r, speedKmh in joints:
         jointStart = (int(round(p1l[0])), int(round(p1l[1])))
         jointEnd = (int(round(p1r[0])), int(round(p1r[1])))
-        cv2.line(canvas, jointStart, jointEnd, (0, 0, 0, jointAlpha), jointThickness, cv2.LINE_AA)
+        if speedKmh < 2:
+            lineColor = (255, 255, 255, 255)
+            lineThickness = jointThickness * 2
+        else:
+            lineColor = (0, 0, 0, 255)
+            lineThickness = jointThickness
+        cv2.line(canvas, jointStart, jointEnd, lineColor, lineThickness, cv2.LINE_AA)
 
     return canvas
 
 
-def drawTopDownCarWidth(canvas, carWidth, lineLengthMeters):
+def drawTopDownCarWidth(canvas, carWidth, lineLengthMeters, carLengthOffset=0):
     if carWidth is None or lineLengthMeters <= 0:
         return
 
-    originPoint = (trajectoryCanvasWidth // 2, trajectoryCanvasHeight - vectorThickness)
+    originPoint = (trajectoryCanvasWidth // 2, trajectoryCanvasHeight - vectorThickness - carLengthOffset)
     halfWidthPx = int((carWidth / 2) * vecToPixel) + 2
     endY = int(originPoint[1] - lineLengthMeters * vecToPixel)
 
@@ -444,11 +466,11 @@ def buildOffsetRigPoints(pointsRig, lateralOffsetMeters):
     return pointsRig + offset
 
 
-def drawTopDownCar(canvas, carWidth, carLength):
+def drawTopDownCar(canvas, carWidth, carLength, carLengthOffset=0):
     if carWidth is None or carLength is None or carWidth <= 0 or carLength <= 0:
         return
 
-    originPoint = (trajectoryCanvasWidth // 2, trajectoryCanvasHeight - vectorThickness)
+    originPoint = (trajectoryCanvasWidth // 2, trajectoryCanvasHeight - vectorThickness - carLengthOffset)
     halfWidthPx = int((carWidth / 2) * vecToPixel)
     halfLengthPx = int((carLength / 2) * vecToPixel)
 
@@ -514,8 +536,8 @@ def visualizeFrame(
         gtThickness = int(vectorThickness * 1.5)
         predThickness = vectorThickness
 
-    gtCanvas = drawTopDownRibbon(groundTruth, grayColor, gtThickness)
-    predCanvas = drawTopDownRibbon(predictions, blueColor, predThickness)
+    gtCanvas = drawTopDownRibbon(groundTruth, grayColor, gtThickness, carLength)
+    predCanvas = drawTopDownRibbon(predictions, blueColor, predThickness, carLength)
     canvasCombined = cv2.add(gtCanvas, predCanvas)
 
     gtRigPoints = buildRigPointsFromVectors(groundTruth, scaleFactor)
@@ -528,10 +550,12 @@ def visualizeFrame(
         maxForward = max(maxForward, float(np.max(predRigPoints[:, 0])))
     lineLength = maxForward + 5.0
 
-    if DEBUG and carWidth is not None:
-        drawTopDownCarWidth(canvasCombined, carWidth, lineLength)
+    carLengthOffset = int(carLength * vecToPixel) if carLength else 0
 
-    drawTopDownCar(canvasCombined, carWidth, carLength)
+    if DEBUG and carWidth is not None:
+        drawTopDownCarWidth(canvasCombined, carWidth, lineLength, carLengthOffset)
+
+    drawTopDownCar(canvasCombined, carWidth, carLength, carLengthOffset)
 
     if SHOWORIGINALTRAJ:
         topDownScale = 1.0
@@ -669,9 +693,9 @@ def runModel(modelPath, videoPath, calibrationRoot, temporalContextTimeWindow=0.
     device = torch.device("cuda" if USEGPU and torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
-    paramsPath = modelPath.replace('best_model.pth', 'training_params.json')
+    paramsPath = os.path.join(os.path.dirname(modelPath), 'training_params.json')
     if os.path.exists(paramsPath):
-        with open(paramsPath, 'r') as f:
+        with open(paramsPath, 'r', encoding='utf-8') as f:
             trainingParams = json.load(f)
         featDim = trainingParams.get('featDim', 512)
         hiddenDim = trainingParams.get('hiddenDim', 1024)
@@ -967,7 +991,7 @@ if __name__ == '__main__':
     USEGPU = False
     DEBUG = False
 
-    modelPath = r"C:\Users\Aypisam\Documents\VS_Python_Project\Autopilot\training\run21\best_model.pth"
+    modelPath = r"C:\Users\Aypisam\Documents\VS_Python_Project\Autopilot\training\run21\best_model_0.1872.pth"
     videoPath = r"C:\Users\Aypisam\Videos\Autopilot_Videos\Camera\camera_front_wide_120fov"
 
     calibrationRoot = r"C:\Users\Aypisam\Videos\Autopilot_Videos\calibration"

@@ -22,20 +22,20 @@ def parseVectorLine(line, timeList=None):
     vectors = []
     try:
         # Extract the part after 'vectors : '
-        vector_data = line.split(' : ')[1].strip()
+        vectorData = line.split(' : ')[1].strip()
         # Split into individual vector strings
-        vector_strings = vector_data.split(' ')
-        time_increment = 3.0 / len(vector_strings) if vector_strings else 0
+        vectorStrings = vectorData.split(' ')
+        timeIncrement = 3.0 / len(vectorStrings) if vectorStrings else 0
 
-        for i, vec_str in enumerate(vector_strings):
-            x_str, y_str = vec_str.split(',')
+        for i, vecStr in enumerate(vectorStrings):
+            xStr, yStr = vecStr.split(',')
             if timeList and i < len(timeList):
                 timeValue = float(timeList[i])
             else:
-                timeValue = (i + 1) * time_increment
+                timeValue = (i + 1) * timeIncrement
             vectors.append({
-                'x': float(x_str),
-                'y': float(y_str),
+                'x': float(xStr),
+                'y': float(yStr),
                 'time': timeValue
             })
     except (IndexError, ValueError) as e:
@@ -46,10 +46,10 @@ def parseVectorLine(line, timeList=None):
 def parseVectorTimes(line):
     """Parses the vectorTimes line and returns a list of floats."""
     try:
-        times_str = line.split(' : ')[1].strip()
-        if times_str == "None":
+        timesStr = line.split(' : ')[1].strip()
+        if timesStr == "None":
             return []
-        return [float(t) for t in times_str.split(' ') if t]
+        return [float(t) for t in timesStr.split(' ') if t]
     except (IndexError, ValueError) as e:
         print(f"Error parsing vectorTimes line: {line.strip()} - {e}")
         return []
@@ -104,6 +104,7 @@ def drawImageSpaceRibbon(overlay, vectors, originPoint, widthPx, color):
     if not vectors:
         return
 
+    timeIncrement = 3.0 / len(vectors) if vectors else 0
     currentPoint = np.array(originPoint, dtype=float)
     halfWidth = max(1.0, widthPx / 2.0)
     joints = []
@@ -114,7 +115,10 @@ def drawImageSpaceRibbon(overlay, vectors, originPoint, widthPx, color):
         segment = np.array([dx, dy], dtype=float)
         segLen = float(np.linalg.norm(segment))
         if segLen < 1e-6:
-            continue
+            segLen = 1e-6  # Ensure minimum length for drawing
+
+        # Calculate speed in km/h
+        speedKmh = math.sqrt(vector['x']**2 + vector['y']**2) / timeIncrement * 3.6 if timeIncrement > 0 else 0
 
         nextPoint = currentPoint + segment
         normal = np.array([-segment[1], segment[0]], dtype=float) / segLen
@@ -132,23 +136,31 @@ def drawImageSpaceRibbon(overlay, vectors, originPoint, widthPx, color):
             [int(round(p0r[0])), int(round(p0r[1]))],
         ], dtype=np.int32)
         cv2.fillConvexPoly(overlay, quad, (*color, 178), lineType=cv2.LINE_AA)
-        joints.append((p1l, p1r))
+        joints.append((p1l, p1r, speedKmh))
 
         currentPoint = nextPoint
 
     jointThickness = max(1, min(jointThicknessMax, int(round(widthPx * jointThicknessScale))))
-    for p1l, p1r in joints:
+    for p1l, p1r, speedKmh in joints:
         jointStart = (int(round(p1l[0])), int(round(p1l[1])))
         jointEnd = (int(round(p1r[0])), int(round(p1r[1])))
-        cv2.line(overlay, jointStart, jointEnd, (0, 0, 0, jointAlpha), jointThickness, cv2.LINE_AA)
+        if speedKmh < 2:
+            lineColor = (255, 255, 255, jointAlpha)
+            lineThickness = jointThickness * 2
+        else:
+            lineColor = (0, 0, 0, jointAlpha)
+            lineThickness = jointThickness
+        cv2.line(overlay, jointStart, jointEnd, lineColor, lineThickness, cv2.LINE_AA)
 
-def drawTopDownRibbonFromVectors(vectors, color, widthPx):
+def drawTopDownRibbonFromVectors(vectors, color, widthPx, carLength=None):
     canvas = np.zeros((trajectoryCanvasHeight, trajectoryCanvasWidth, 4), dtype=np.uint8)
-    originPoint = np.array([trajectoryCanvasWidth // 2, trajectoryCanvasHeight - vectorThickness], dtype=float)
+    offset = int(carLength * vecToPixel) if carLength else 0
+    originPoint = np.array([trajectoryCanvasWidth // 2, trajectoryCanvasHeight - vectorThickness - offset], dtype=float)
 
     if not vectors:
         return canvas
 
+    timeIncrement = 3.0 / len(vectors) if vectors else 0
     currentPoint = originPoint
     halfWidth = max(1.0, widthPx / 2.0)
     joints = []
@@ -159,7 +171,10 @@ def drawTopDownRibbonFromVectors(vectors, color, widthPx):
         segment = np.array([dx, dy], dtype=float)
         segLen = float(np.linalg.norm(segment))
         if segLen < 1e-6:
-            continue
+            segLen = 1e-6  # Ensure minimum length for drawing
+
+        # Calculate speed in km/h
+        speedKmh = math.sqrt(vector['x']**2 + vector['y']**2) / timeIncrement * 3.6 if timeIncrement > 0 else 0
 
         nextPoint = currentPoint + segment
         normal = np.array([-segment[1], segment[0]], dtype=float) / segLen
@@ -177,23 +192,29 @@ def drawTopDownRibbonFromVectors(vectors, color, widthPx):
             [int(round(p0r[0])), int(round(p0r[1]))],
         ], dtype=np.int32)
         cv2.fillConvexPoly(canvas, quad, (*color, 255), lineType=cv2.LINE_AA)
-        joints.append((p1l, p1r))
+        joints.append((p1l, p1r, speedKmh))
 
         currentPoint = nextPoint
 
     jointThickness = max(1, min(jointThicknessMax, int(round(widthPx * jointThicknessScale))))
-    for p1l, p1r in joints:
+    for p1l, p1r, speedKmh in joints:
         jointStart = (int(round(p1l[0])), int(round(p1l[1])))
         jointEnd = (int(round(p1r[0])), int(round(p1r[1])))
-        cv2.line(canvas, jointStart, jointEnd, (0, 0, 0, 255), jointThickness, cv2.LINE_AA)
+        if speedKmh < 2:
+            lineColor = (255, 255, 255, 255)
+            lineThickness = jointThickness * 2
+        else:
+            lineColor = (0, 0, 0, 255)
+            lineThickness = jointThickness
+        cv2.line(canvas, jointStart, jointEnd, lineColor, lineThickness, cv2.LINE_AA)
 
     return canvas
 
-def drawTopDownCar(canvas, carWidth, carLength):
+def drawTopDownCar(canvas, carWidth, carLength, carLengthOffset=0):
     if carWidth is None or carLength is None or carWidth <= 0 or carLength <= 0:
         return
 
-    originPoint = (trajectoryCanvasWidth // 2, trajectoryCanvasHeight - vectorThickness)
+    originPoint = (trajectoryCanvasWidth // 2, trajectoryCanvasHeight - vectorThickness - carLengthOffset)
     halfWidthPx = int((carWidth / 2) * vecToPixel)
     halfLengthPx = int((carLength / 2) * vecToPixel)
 
@@ -344,6 +365,11 @@ def drawProjectedRibbonFromRig(overlay, rigPoints, intrinsics, extrinsics, downs
     if len(rigPoints) < 2:
         return
 
+    # Calculate speeds in km/h for each segment
+    numSegments = len(rigPoints) - 1
+    timeIncrement = 3.0 / numSegments if numSegments > 0 else 0
+    speeds = [np.linalg.norm(rigPoints[i+1][:2] - rigPoints[i][:2]) / timeIncrement * 3.6 if timeIncrement > 0 else 0 for i in range(numSegments)]
+
     count = len(rigPoints)
     dirs = [None] * (count - 1)
     for i in range(count - 1):
@@ -439,14 +465,20 @@ def drawProjectedRibbonFromRig(overlay, rigPoints, intrinsics, extrinsics, downs
         cv2.fillConvexPoly(overlay, quad, color, lineType=cv2.LINE_AA)
 
         if l1 is not None and r1 is not None:
-            jointPairs.append((l1, r1))
+            jointPairs.append((l1, r1, speeds[i]))
 
-    for l1, r1 in jointPairs:
+    for l1, r1, speedKmh in jointPairs:
         jointStart = (int(round(l1[0])), int(round(l1[1])))
         jointEnd = (int(round(r1[0])), int(round(r1[1])))
         pixelWidth = float(np.linalg.norm(np.array(l1) - np.array(r1)))
         jointThickness = max(1, int(round(pixelWidth * jointThicknessScale)))
-        cv2.line(overlay, jointStart, jointEnd, (0, 0, 0, jointAlpha), jointThickness, cv2.LINE_AA)
+        if speedKmh < 2:
+            lineColor = (255, 255, 255, jointAlpha)
+            lineThickness = jointThickness * 2
+        else:
+            lineColor = (0, 0, 0, jointAlpha)
+            lineThickness = jointThickness
+        cv2.line(overlay, jointStart, jointEnd, lineColor, lineThickness, cv2.LINE_AA)
 
 def viewRandomItem(datasetDir, calibrationRoot=None, cameraName="camera_front_wide_120fov"):
     """
@@ -478,6 +510,7 @@ def viewRandomItem(datasetDir, calibrationRoot=None, cameraName="camera_front_wi
     
     print(f"Total datapoints: {len(labelFiles)}")
     
+    print("Sorting label files...")
     labelFiles.sort()
     currentIndex = random.randint(0, len(labelFiles) - 1)
 
@@ -586,10 +619,11 @@ def viewRandomItem(datasetDir, calibrationRoot=None, cameraName="camera_front_wi
 
             cv2.imshow("Dataset Viewer - Press 'q' to quit, any other key for next", combinedDisplay)
 
-            topDownCanvas = drawTopDownRibbonFromVectors(vectors, grayColor, vectorThickness)
             topDownCarWidth = vehicleDims.get('width', None) if vehicleDims else None
             topDownCarLength = vehicleDims.get('length', None) if vehicleDims else None
-            drawTopDownCar(topDownCanvas, topDownCarWidth, topDownCarLength)
+            topDownCanvas = drawTopDownRibbonFromVectors(vectors, grayColor, vectorThickness, topDownCarLength)
+            carLengthOffset = int(topDownCarLength * vecToPixel) if topDownCarLength else 0
+            drawTopDownCar(topDownCanvas, topDownCarWidth, topDownCarLength, carLengthOffset)
             topDownScale = 0.6
             topDownResized = cv2.resize(
                 topDownCanvas,
@@ -612,9 +646,9 @@ def viewRandomItem(datasetDir, calibrationRoot=None, cameraName="camera_front_wi
             if key == ord('q'):
                 break
             if key == 2424832:  # Left arrow
-                currentIndex = (currentIndex - 1 + len(labelFiles)) % len(labelFiles)
+                currentIndex = (currentIndex - 10 + len(labelFiles)) % len(labelFiles)
             elif key == 2555904:  # Right arrow
-                currentIndex = (currentIndex + 1) % len(labelFiles)
+                currentIndex = (currentIndex + 10) % len(labelFiles)
             else: # Any other key for random
                 currentIndex = random.randint(0, len(labelFiles) - 1)
         except Exception as exc:
@@ -625,6 +659,6 @@ def viewRandomItem(datasetDir, calibrationRoot=None, cameraName="camera_front_wi
     cv2.destroyAllWindows()
 
 if __name__ == "__main__":
-    datasetOutputDir = r"F:\Projects\Autopilot\dataset_output\output_NVIDIA_12_3.0_0.1_framesize640x360(1)"
-    calibrationRoot = r"F:\Projects\Autopilot\nvidia_dataset\calibration"
+    datasetOutputDir = r"C:\Users\Aypisam\Videos\Autopilot_Videos\output_NVIDIA_12_3.0_0.1_framesize640x360"
+    calibrationRoot = r"C:\Users\Aypisam\Videos\Autopilot_Videos\calibration"
     viewRandomItem(datasetOutputDir, calibrationRoot=calibrationRoot)
