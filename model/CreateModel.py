@@ -145,9 +145,16 @@ class MotionFpnEncoder(nn.Module):
         self.fuse16 = nn.Conv2d(baseChannels * 4 * 3, featDim, kernel_size=1, bias=False)
         self.fpnFuse = ConvGNAct(featDim, featDim, kernel=3, padding=1)
 
-    def forward(self, imgT, imgTm1):
+    def forward(self, imgT, imgTm1, returnMotionMap=False):
         feat8T, feat16T = self.backbone(imgT)
         feat8Tm1, feat16Tm1 = self.backbone(imgTm1)
+
+        motionMap = None
+        if returnMotionMap:
+            motion8 = torch.mean(torch.abs(feat8T - feat8Tm1), dim=1, keepdim=True)
+            motion16 = torch.mean(torch.abs(feat16T - feat16Tm1), dim=1, keepdim=True)
+            motion16Up = F.interpolate(motion16, size=motion8.shape[-2:], mode="bilinear", align_corners=False)
+            motionMap = 0.5 * motion8 + 0.5 * motion16Up
 
         motion8 = torch.cat([feat8T, feat8Tm1, feat8T - feat8Tm1], dim=1)
         motion16 = torch.cat([feat16T, feat16Tm1, feat16T - feat16Tm1], dim=1)
@@ -162,6 +169,9 @@ class MotionFpnEncoder(nn.Module):
         yCoords = torch.linspace(-1.0, 1.0, height, device=fmap.device).view(1, 1, height, 1).expand(batchSize, 1, height, width)
         xCoords = torch.linspace(-1.0, 1.0, width, device=fmap.device).view(1, 1, 1, width).expand(batchSize, 1, height, width)
         fmap = torch.cat([fmap, xCoords, yCoords], dim=1)
+
+        if returnMotionMap:
+            return fmap, motionMap.squeeze(1)
 
         return fmap
 
@@ -340,12 +350,18 @@ class TrajectoryModel(nn.Module):
             'totalSeconds': float(vectorTimes[-1]) if vectorTimes else float(predSteps * intervalSeconds),
         }
 
-    def forward(self, imgT, imgTm1, gtTraj=None, teacherForcing=False, tfRatio=0.9, vectorTimes=None):
-        fmap = self.encoder(imgT, imgTm1)
+    def forward(self, imgT, imgTm1, gtTraj=None, teacherForcing=False, tfRatio=0.9, vectorTimes=None, returnMotionMap=False):
+        if returnMotionMap:
+            fmap, motionMap = self.encoder(imgT, imgTm1, returnMotionMap=True)
+        else:
+            fmap = self.encoder(imgT, imgTm1)
+            motionMap = None
         preds, attnMaps = self.decoder(fmap, vectorTimes=vectorTimes)
         aux = None
         if self.use_aux_dyn:
             aux = self.aux(fmap)
+        if returnMotionMap:
+            return preds, aux, attnMaps, motionMap
         return preds, aux, attnMaps
 
 

@@ -29,6 +29,9 @@ trajectoryCanvasWidth = 500
 trajectoryCanvasHeight = 750
 vecToPixel = 10
 vectorThickness = 10
+jointThicknessScale = 0.02
+jointThicknessMax = 3
+jointAlpha = 100
 scaleFactor = 1.0
 
 
@@ -256,6 +259,7 @@ def drawProjectedRibbonFromRig(overlay, rigPoints, intrinsics, extrinsics, downs
             rightProjected.append(rightProj[ri])
             ri += 1
 
+    joints = []
     for i in range(count - 1):
         l0 = leftProjected[i]
         l1 = leftProjected[i + 1]
@@ -283,6 +287,14 @@ def drawProjectedRibbonFromRig(overlay, rigPoints, intrinsics, extrinsics, downs
             [int(round(r0[0])), int(round(r0[1]))],
         ], dtype=np.int32)
         cv2.fillConvexPoly(overlay, quad, color, lineType=cv2.LINE_AA)
+        joints.append((l1, r1))
+
+    jointThickness = max(1, min(jointThicknessMax, int(round(widthMeters * vecToPixel * jointThicknessScale))))
+    for l1, r1 in joints:
+        if l1 is not None and r1 is not None:
+            jointStart = (int(round(l1[0])), int(round(l1[1])))
+            jointEnd = (int(round(r1[0])), int(round(r1[1])))
+            cv2.line(overlay, jointStart, jointEnd, (0, 0, 0, jointAlpha), jointThickness, cv2.LINE_AA)
 
 
 def drawProjectedCarCuboid(overlay, intrinsics, extrinsics, downscale, carWidth, carLength, rearAxleToCenter):
@@ -370,6 +382,7 @@ def drawTopDownRibbon(vectors, color, widthPx):
     vectorsNp = vectors.cpu().numpy() if isinstance(vectors, torch.Tensor) else np.asarray(vectors, dtype=float)
     currentPoint = originPoint
     halfWidth = max(1.0, widthPx / 2.0)
+    joints = []
 
     for vec in vectorsNp:
         dx = float(vec[0]) * vecToPixel
@@ -395,8 +408,15 @@ def drawTopDownRibbon(vectors, color, widthPx):
             [int(round(p0r[0])), int(round(p0r[1]))],
         ], dtype=np.int32)
         cv2.fillConvexPoly(canvas, quad, (*color, 255), lineType=cv2.LINE_AA)
+        joints.append((p1l, p1r))
 
         currentPoint = nextPoint
+
+    jointThickness = max(1, min(jointThicknessMax, int(round(widthPx * jointThicknessScale))))
+    for p1l, p1r in joints:
+        jointStart = (int(round(p1l[0])), int(round(p1l[1])))
+        jointEnd = (int(round(p1r[0])), int(round(p1r[1])))
+        cv2.line(canvas, jointStart, jointEnd, (0, 0, 0, jointAlpha), jointThickness, cv2.LINE_AA)
 
     return canvas
 
@@ -447,11 +467,29 @@ def drawTopDownCar(canvas, carWidth, carLength):
     )
 
 
+def blendOverlays(bottom, top):
+    bottomRgb = bottom[..., :3].astype(np.float32)
+    bottomA = bottom[..., 3:4].astype(np.float32) / 255.0
+    topRgb = top[..., :3].astype(np.float32)
+    topA = top[..., 3:4].astype(np.float32) / 255.0
+
+    outA = topA + bottomA * (1.0 - topA)
+    outRgb = topRgb * topA + bottomRgb * bottomA * (1.0 - topA)
+    safeA = np.clip(outA, 1e-6, 1.0)
+    outRgb = outRgb / safeA
+
+    out = np.zeros_like(bottom)
+    out[..., :3] = np.clip(outRgb, 0, 255).astype(np.uint8)
+    out[..., 3] = np.clip(outA * 255.0, 0, 255).astype(np.uint8).squeeze(-1)
+    return out
+
+
 def visualizeFrame(
     frame,
     predictions,
     groundTruth,
     attnMap,
+    motionMap,
     currentTelemetry,
     interval,
     vectorTimes,
@@ -462,10 +500,12 @@ def visualizeFrame(
     rearAxleToCenter,
     viewModeLabel,
     overlayAttention=False,
+    overlayMotion=False,
 ):
     scaledFrame = cv2.resize(frame, (frame.shape[1] // DOWNSCALE, frame.shape[0] // DOWNSCALE))
 
-    trajectoryOverlay = np.zeros((scaledFrame.shape[0], scaledFrame.shape[1], 4), dtype=np.uint8)
+    gtOverlay = np.zeros((scaledFrame.shape[0], scaledFrame.shape[1], 4), dtype=np.uint8)
+    predOverlay = np.zeros((scaledFrame.shape[0], scaledFrame.shape[1], 4), dtype=np.uint8)
 
     if carWidth is not None:
         gtThickness = max(1, int(round(carWidth * vecToPixel)))
@@ -505,13 +545,15 @@ def visualizeFrame(
     predProjected = projectRigPoints(predRigPoints, intrinsics, extrinsics, DOWNSCALE) if predRigPoints is not None else None
 
     if carWidth is not None:
-        drawProjectedRibbonFromRig(trajectoryOverlay, gtRigPoints, intrinsics, extrinsics, DOWNSCALE, carWidth, (*grayColor, 178))
-        drawProjectedRibbonFromRig(trajectoryOverlay, predRigPoints, intrinsics, extrinsics, DOWNSCALE, carWidth * 0.9, (*blueColor, 178))
+        drawProjectedRibbonFromRig(gtOverlay, gtRigPoints, intrinsics, extrinsics, DOWNSCALE, carWidth, (*grayColor, 178))
+        drawProjectedRibbonFromRig(predOverlay, predRigPoints, intrinsics, extrinsics, DOWNSCALE, carWidth * 1.1, (*blueColor, 100))
     else:
         projectedGtThickness = int(vectorThickness * 1.5)
         projectedPredThickness = vectorThickness
-        drawProjectedPolyline(trajectoryOverlay, gtProjected, (*grayColor, 255), projectedGtThickness)
-        drawProjectedPolyline(trajectoryOverlay, predProjected, (*blueColor, 255), projectedPredThickness)
+        drawProjectedPolyline(gtOverlay, gtProjected, (*grayColor, 255), projectedGtThickness)
+        drawProjectedPolyline(predOverlay, predProjected, (*blueColor, 200), projectedPredThickness)
+
+    trajectoryOverlay = blendOverlays(gtOverlay, predOverlay)
 
     if DEBUG and carWidth is not None and extrinsics is not None and intrinsics is not None:
         leftPointsRig = np.array([[0, -carWidth / 2, 0], [lineLength, -carWidth / 2, 0]], dtype=float)
@@ -545,6 +587,15 @@ def visualizeFrame(
         # blend onto scaledFrame
         alpha_attn = 0.3
         scaledFrame = cv2.addWeighted(scaledFrame, 1 - alpha_attn, heatmap, alpha_attn, 0)
+
+    if motionMap is not None and overlayMotion:
+        motionResized = cv2.resize(motionMap, (scaledFrame.shape[1], scaledFrame.shape[0]), interpolation=cv2.INTER_LINEAR)
+        motionNorm = motionResized / (motionResized.max() + 1e-8)
+        motionDisplay = (motionNorm ** 0.5)
+        motionDisplay = (motionDisplay * 255).astype(np.uint8)
+        motionHeatmap = cv2.applyColorMap(motionDisplay, cv2.COLORMAP_TURBO)
+        alpha_motion = 0.35
+        scaledFrame = cv2.addWeighted(scaledFrame, 1 - alpha_motion, motionHeatmap, alpha_motion, 0)
 
     font = cv2.FONT_HERSHEY_SIMPLEX
     fontScale = 1 / DOWNSCALE
@@ -749,6 +800,7 @@ def runModel(modelPath, videoPath, calibrationRoot, temporalContextTimeWindow=0.
     prediction = None
     labels = None
     lastAttnMap = None
+    lastMotionMap = None
     viewMode = 0
     attnIndex = -1
 
@@ -813,7 +865,7 @@ def runModel(modelPath, videoPath, calibrationRoot, temporalContextTimeWindow=0.
                     currentImgTensor = transform(currentImage).unsqueeze(0).to(device)
 
                     modelStart = time.perf_counter()
-                    prediction, _, attnMaps = model(currentImgTensor, prevImgTensor)
+                    prediction, _, attnMaps, motionMap = model(currentImgTensor, prevImgTensor, returnMotionMap=True)
                     modelTimeMs = (time.perf_counter() - modelStart) * 1000.0
                     if attnMaps:
                         if attnIndex == -1:
@@ -822,6 +874,10 @@ def runModel(modelPath, videoPath, calibrationRoot, temporalContextTimeWindow=0.
                             lastAttnMap = attnMaps[attnIndex].squeeze().cpu().numpy()
                     else:
                         lastAttnMap = None
+                    if motionMap is not None:
+                        lastMotionMap = motionMap.squeeze().cpu().numpy()
+                    else:
+                        lastMotionMap = None
 
                 if currentFrameTimestampUs is not None and currentEgoState is not None:
                     trajStart = time.perf_counter()
@@ -839,18 +895,28 @@ def runModel(modelPath, videoPath, calibrationRoot, temporalContextTimeWindow=0.
                     trajTimeMs = (time.perf_counter() - trajStart) * 1000.0
 
                 displayFrame = frame
-                if viewMode == 1 or viewMode == 2:
+                if viewMode != 0:
                     modelViewSmall = cv2.resize(frame, (inputImageSize[1], inputImageSize[0]))
                     displayFrame = cv2.resize(modelViewSmall, (frame.shape[1], frame.shape[0]))
 
                 vizStart = time.perf_counter()
                 overlayAttention = (viewMode == 2)
-                viewModeLabel = "Original View" if viewMode == 0 else "Model View" if viewMode == 1 else f"Internal Model View{' (All)' if attnIndex == -1 else f' (Step {attnIndex+1})'}"
+                overlayMotion = (viewMode == 3)
+                viewModeLabel = (
+                    "Original View"
+                    if viewMode == 0
+                    else "Model View"
+                    if viewMode == 1
+                    else f"Internal Model View{' (All)' if attnIndex == -1 else f' (Step {attnIndex+1})'}"
+                    if viewMode == 2
+                    else "Motion Encoder View"
+                )
                 visualizeFrame(
                     displayFrame,
                     prediction.squeeze() if prediction is not None else None,
                     labels,
                     lastAttnMap,
+                    lastMotionMap,
                     currentTelemetry,
                     interval,
                     vectorTimes,
@@ -861,6 +927,7 @@ def runModel(modelPath, videoPath, calibrationRoot, temporalContextTimeWindow=0.
                     rearAxleToCenter,
                     viewModeLabel,
                     overlayAttention,
+                    overlayMotion,
                 )
                 vizTimeMs = (time.perf_counter() - vizStart) * 1000.0
 
@@ -879,7 +946,7 @@ def runModel(modelPath, videoPath, calibrationRoot, temporalContextTimeWindow=0.
             if key & 0xFF == ord('q'):
                 break
             if key & 0xFF == ord('v'):
-                viewMode = (viewMode + 1) % 3
+                viewMode = (viewMode + 1) % 4
             if viewMode == 2:
                 if key & 0xFF == ord('j'):  # left (previous attention)
                     attnIndex = max(-1, attnIndex - 1)
@@ -900,7 +967,7 @@ if __name__ == '__main__':
     USEGPU = False
     DEBUG = False
 
-    modelPath = r"C:\Users\Aypisam\Documents\VS_Python_Project\Autopilot\training\run20\best_model.pth"
+    modelPath = r"C:\Users\Aypisam\Documents\VS_Python_Project\Autopilot\training\run21\best_model.pth"
     videoPath = r"C:\Users\Aypisam\Videos\Autopilot_Videos\Camera\camera_front_wide_120fov"
 
     calibrationRoot = r"C:\Users\Aypisam\Videos\Autopilot_Videos\calibration"
