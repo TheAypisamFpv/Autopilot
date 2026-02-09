@@ -19,8 +19,9 @@ import random
 from CreateModel import TrajectoryModel
 from progressBar import getProgressBar
 
-# Enable expandable segments for better memory management
-os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+# Enable expandable segments for better memory management when supported.
+if torch.cuda.is_available() and os.name != "nt" and "PYTORCH_CUDA_ALLOC_CONF" not in os.environ:
+    os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
 
 class DrivingDataset(Dataset):
@@ -30,7 +31,7 @@ class DrivingDataset(Dataset):
     Optionally filters samples using 'balanced.json' if present.
     """
 
-    def __init__(self, datasetDir, transform=None, maxSize=None, predSteps=6, dtype=torch.float32):
+    def __init__(self, datasetDir, transform=None, maxSize=None, predSteps=6, dtype=torch.float32, verbose=True):
         self.datasetDir = datasetDir
         self.labelsDir = os.path.join(datasetDir, "labels")
         self.imagesDir = os.path.join(datasetDir, "images")
@@ -39,6 +40,7 @@ class DrivingDataset(Dataset):
         self.dtype = dtype
         self.maxSize = maxSize
         self.labelsOnly = False
+        self.verbose = verbose
 
         if not os.path.exists(self.imagesDir):
             self.labelsOnly = True
@@ -56,7 +58,8 @@ class DrivingDataset(Dataset):
         # Check for balanced.json
         balancedJsonPath = os.path.join(datasetDir, "balanced.json")
         if os.path.exists(balancedJsonPath):
-            print(f"Found balanced.json - using filtered dataset ({balancedJsonPath})")
+            if self.verbose:
+                print(f"Found balanced.json - using filtered dataset ({balancedJsonPath})")
             with open(balancedJsonPath, 'r') as f:
                 balancedData = json.load(f)
             
@@ -64,12 +67,14 @@ class DrivingDataset(Dataset):
             self.samples = [idx for idx in allSamples if idx in keepIndices]
             totalSamples = len(self.samples)
             effectiveSamples = min(totalSamples, self.maxSize) if self.maxSize is not None else totalSamples
-            print(f"Filtered to {effectiveSamples} / {totalSamples} samples based on balanced.json")
+            if self.verbose:
+                print(f"Filtered to {effectiveSamples} / {totalSamples} samples based on balanced.json")
         else:
             self.samples = allSamples
             totalSamples = len(self.samples)
             effectiveSamples = min(totalSamples, self.maxSize) if self.maxSize is not None else totalSamples
-            print(f"No balanced.json found - using {effectiveSamples} / {totalSamples} samples")
+            if self.verbose:
+                print(f"No balanced.json found - using {effectiveSamples} / {totalSamples} samples")
 
     def __len__(self):
         if self.maxSize is not None:
@@ -286,6 +291,9 @@ def trainModel(
     useAuxDyn=False,
     featDim=256,
     hiddenDim=256,
+    baseChannels=32,
+    numHeads=4,
+    numLayers=2,
     predSteps=None,
     intervalSeconds=None,
     deviceOverride=None,
@@ -312,6 +320,9 @@ def trainModel(
         useAuxDyn (bool): Whether to use auxiliary dynamics head.
         featDim (int): Feature dimension for model.
         hiddenDim (int): Hidden dimension for model.
+        baseChannels (int): Base channel count for the backbone.
+        numHeads (int): Number of attention heads in the decoder.
+        numLayers (int): Number of transformer decoder layers.
         predSteps (int or None): Number of prediction steps (inferred from labels if None).
         intervalSeconds (float or None): Time interval between prediction steps (inferred from labels if None).
         deviceOverride (str or None): Device to use ('cpu' or 'cuda'), or None for auto-detect.
@@ -363,6 +374,12 @@ def trainModel(
             featDim = loadedParams["featDim"]
         if "hiddenDim" in loadedParams:
             hiddenDim = loadedParams["hiddenDim"]
+        if "baseChannels" in loadedParams:
+            baseChannels = loadedParams["baseChannels"]
+        if "numHeads" in loadedParams:
+            numHeads = loadedParams["numHeads"]
+        if "numLayers" in loadedParams:
+            numLayers = loadedParams["numLayers"]
         if "predSteps" in loadedParams:
             predSteps = loadedParams["predSteps"]
         if "intervalSeconds" in loadedParams:
@@ -429,9 +446,9 @@ def trainModel(
         transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
     ])
 
-    baseDataset = DrivingDataset(datasetDir, transform=None, maxSize=datasetMaxSize, predSteps=predSteps)
-    trainDataset = DrivingDataset(datasetDir, transform=trainTransform, maxSize=datasetMaxSize, predSteps=predSteps)
-    valDataset = DrivingDataset(datasetDir, transform=valTransform, maxSize=datasetMaxSize, predSteps=predSteps)
+    baseDataset = DrivingDataset(datasetDir, transform=None, maxSize=datasetMaxSize, predSteps=predSteps, verbose=True)
+    trainDataset = DrivingDataset(datasetDir, transform=trainTransform, maxSize=datasetMaxSize, predSteps=predSteps, verbose=False)
+    valDataset = DrivingDataset(datasetDir, transform=valTransform, maxSize=datasetMaxSize, predSteps=predSteps, verbose=False)
     totalSamples = len(baseDataset)
 
     numWorkers = 1
@@ -468,9 +485,9 @@ def trainModel(
             return []
 
         if trainSamplesPerEpoch is not None:
-            targetValCount = max(1, int(round(trainSamplesPerEpoch * 0.2)))
+            targetValCount = max(1, int(round(trainSamplesPerEpoch * 2)))
         else:
-            targetValCount = max(1, int(round(totalSamples * (1.0 - trainValSplit))))
+            targetValCount = max(1, int(round(totalSamples * (2.0 / 3.0))))
 
         rng = random.Random(seed)
         valIndices = []
@@ -512,9 +529,9 @@ def trainModel(
     if not valIndices:
         valIndices = []
         if trainSamplesPerEpoch is not None:
-            targetValCount = max(1, int(round(trainSamplesPerEpoch * 0.2)))
+            targetValCount = max(1, int(round(trainSamplesPerEpoch * 2)))
         else:
-            targetValCount = max(1, int(round(totalSamples * (1.0 - trainValSplit))))
+            targetValCount = max(1, int(round(totalSamples * (2.0 / 3.0))))
         rng = random.Random(seed)
         valIndices = rng.sample(range(totalSamples), min(targetValCount, totalSamples))
     valIndexSet = set(valIndices)
@@ -566,6 +583,9 @@ def trainModel(
     model = TrajectoryModel(
         featDim=featDim,
         hiddenDim=hiddenDim,
+        baseChannels=baseChannels,
+        numHeads=numHeads,
+        numLayers=numLayers,
         predSteps=predSteps,
         useAuxDyn=useAuxDyn,
         intervalSeconds=intervalSeconds,
@@ -598,6 +618,9 @@ def trainModel(
         "useAuxDyn": useAuxDyn,
         "featDim": featDim,
         "hiddenDim": hiddenDim,
+        "baseChannels": baseChannels,
+        "numHeads": numHeads,
+        "numLayers": numLayers,
         "predSteps": predSteps,
         "intervalSeconds": intervalSeconds,
         "vectorTimes": model.vectorTimes,
@@ -859,20 +882,23 @@ if __name__ == "__main__":
     """
     PLEASE MAKE SURE TO USE A CORRECT DATASET (like image size, time window, etc.)
     """
-    datasetPath = r"F:\Projects\Autopilot\dataset_output\output_NVIDIA_12_3.0_0.1_framesize640x360"
+    datasetPath = r"F:\Projects\Autopilot\dataset_output\output_NVIDIA_12_3.0_0.1_framesize640x360(1)"
     datasetMaxSize = None           # Maximum number of samples to load from the dataset (None = use all available)
-    numEpochs = 10000               # ~1 full pass at 10k samples/epoch for ~9.6M samples
-    patience = 50                   # Early stopping patience (stop if no val improvement for this many epochs)
-    batchSize = 16                  # Number of samples per training batch (controls GPU memory usage)
+    numEpochs = 2_000               # ~1 full pass at 10k samples/epoch for ~9.6M samples
+    patience = 100                   # Early stopping patience (stop if no val improvement for this many epochs)
+    batchSize = 12                  # Number of samples per training batch (controls GPU memory usage)
     gradAccumSteps = 1              # Gradient accumulation steps (simulates larger effective batch if >1)
     trainValSplit = 0.8             # Train/validation split ratio
-    trainSamplesPerEpoch = 1_000    # Random samples per epoch for fast iterations
-    valSamplesPerEpoch = int((1 - trainValSplit)*trainSamplesPerEpoch)      # Random val samples per epoch (20% of trainSamplesPerEpoch)
+    trainSamplesPerEpoch = 5_000    # Random samples per epoch for fast iterations
+    valSamplesPerEpoch = trainSamplesPerEpoch * 2                          # Fixed val samples per epoch (2x trainSamplesPerEpoch)
     seed = 42                       # Base seed for reproducibility
     splitSeed = 42                  # Train/val split seed (keep fixed to avoid contamination)
     learningRate = 5e-5             # Optimized for transformer stability
-    featDim = 256                   # Feature dimension in the model
-    hiddenDim = 512                 # Hidden dimension in the model
+    featDim = 384                   # Feature dimension in the model
+    hiddenDim = 768                 # Hidden dimension in the model
+    baseChannels = 48               # Backbone width (increases compute per frame)
+    numHeads = 8                    # Transformer attention heads
+    numLayers = 4                   # Transformer depth
     useAuxDyn = False               # Whether to enable auxiliary dynamics head (speed/accel prediction)
     resumeModelPath = None          #"D:/VS_Python_Project/Autopilot/Autopilot/training/run18/best_model.pth"    # Set to path like "training/run13/best_model.pth" to resume training
 
@@ -892,5 +918,8 @@ if __name__ == "__main__":
         useAuxDyn=useAuxDyn,
         featDim=featDim,
         hiddenDim=hiddenDim,
+        baseChannels=baseChannels,
+        numHeads=numHeads,
+        numLayers=numLayers,
         resumeModelPath=resumeModelPath,
     )

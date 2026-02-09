@@ -459,12 +459,17 @@ def viewRandomItem(datasetDir, calibrationRoot=None, cameraName="camera_front_wi
     labelsDir = os.path.join(datasetDir, "labels")
 
     imagesize = tuple(datasetDir.split('framesize')[1].split('x'))
+    if "(" in imagesize[1]:
+        imagesize = imagesize[0], imagesize[1].split('(')[0]
+    
     imagesize = int(imagesize[0]), int(imagesize[1])
     print("imagesize: ", imagesize)
 
     if not os.path.exists(labelsDir):
         print(f"Labels directory not found at: {labelsDir}")
         return
+
+    print(f"Loading dataset from: {datasetDir}...")
 
     labelFiles = [f for f in os.listdir(labelsDir) if f.endswith(".txt")]
     if not labelFiles:
@@ -620,6 +625,6 @@ def viewRandomItem(datasetDir, calibrationRoot=None, cameraName="camera_front_wi
     cv2.destroyAllWindows()
 
 if __name__ == "__main__":
-    datasetOutputDir = r"C:\Users\Aypisam\Videos\Autopilot_Videos\output_NVIDIA_12_3.0_0.1_framesize640x360"
-    calibrationRoot = r"C:\Users\Aypisam\Videos\Autopilot_Videos\calibration"
+    datasetOutputDir = r"F:\Projects\Autopilot\dataset_output\output_NVIDIA_12_3.0_0.1_framesize640x360(1)"
+    calibrationRoot = r"F:\Projects\Autopilot\nvidia_dataset\calibration"
     viewRandomItem(datasetOutputDir, calibrationRoot=calibrationRoot)

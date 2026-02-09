@@ -1050,6 +1050,7 @@ def generateDatasetNvidiaClip(
     temporalContextTimeWindow: float,
     DEBUGVIZ: bool = False,
     labelsOnly: bool = True,
+    exportPngs: bool = False,
     indexCounter: Optional[Any] = None,
     indexLock: Optional[Any] = None,
     progressDict: Optional[Any] = None,
@@ -1072,6 +1073,8 @@ def generateDatasetNvidiaClip(
         vectorTimeWindow: Time window in seconds for each vector
         temporalContextTimeWindow: Time window in seconds for temporal context
         DEBUGVIZ: Whether to visualize the future trajectory
+        labelsOnly: Whether to save labels without images
+        exportPngs: Whether to save PNGs alongside labels when labelsOnly is True
 
     Returns:
         Updated dataset index
@@ -1225,7 +1228,7 @@ def generateDatasetNvidiaClip(
             speed,
             acceleration,
             turnRate,
-            saveImages=not labelsOnly,
+            saveImages=(not labelsOnly) or exportPngs,
             videoPath=cameraVideoPath if labelsOnly else None,
             prevFrameIndex=prevFrameIndex if labelsOnly else None,
             currentFrameIndex=frameIndex if labelsOnly else None
@@ -1268,6 +1271,7 @@ def processNvidiaClip(args: Tuple[Any, ...]) -> int:
         temporalContextTimeWindow,
         DEBUGVIZ,
         labelsOnly,
+        exportPngs,
         indexCounter,
         indexLock,
         progressDict,
@@ -1291,6 +1295,7 @@ def processNvidiaClip(args: Tuple[Any, ...]) -> int:
         temporalContextTimeWindow,
         DEBUGVIZ=DEBUGVIZ,
         labelsOnly=labelsOnly,
+        exportPngs=exportPngs,
         indexCounter=indexCounter,
         indexLock=indexLock,
         progressDict=progressDict,
@@ -1316,6 +1321,7 @@ def main(
     manualStartIndex = False,
     DEBUGVIZ:bool = False,
     labelsOnly: bool = True,
+    exportPngs: bool = False,
     numWorkers: int = 0
     ):
     """
@@ -1330,6 +1336,8 @@ def main(
     - temporalContextTimeWindow (float): Time window for temporal context, in seconds.
     - manualStartIndex (int, optional): Starting index for dataset items, can be adjusted if resuming from a previous run.
     - DEBUGVIZ (bool, optional): Flag to enable debug visualization.
+    - labelsOnly (bool, optional): Save labels without images.
+    - exportPngs (bool, optional): Save PNGs alongside labels when labelsOnly is True.
     """
     outputDir = os.path.join(outputDir, f"output_NVIDIA_{vectorsNumbers}_{vectorTimeWindow}_{temporalContextTimeWindow}_framesize{imageSize[0]}x{imageSize[1]}")
     startIndex = manualStartIndex if manualStartIndex is not False else 0
@@ -1389,6 +1397,7 @@ def main(
                         temporalContextTimeWindow,
                         DEBUGVIZ,
                         labelsOnly,
+                        exportPngs,
                         indexCounter,
                         indexLock,
                         progressDict,
@@ -1455,6 +1464,7 @@ def main(
                         temporalContextTimeWindow,
                         DEBUGVIZ=DEBUGVIZ,
                         labelsOnly=labelsOnly,
+                        exportPngs=exportPngs,
                         verbose=True
                     )
         else:
@@ -1473,7 +1483,7 @@ def main(
 
 if __name__ == "__main__":
     videoPath = r"F:\Projects\Autopilot\nvidia_dataset"
-    outputDir = r"F:\Projects\Autopilot\dataset_output"
+    outputDir = r"D:\VS_Python_Project\Autopilot\NVIDIA_Dataset_output"
     frameInterval = 0 # interval between each frame sample, in seconds
     imageSize = (640, 360)  # Width, Height
     
@@ -1493,6 +1503,21 @@ if __name__ == "__main__":
     manualStartIndex = 0  # Starting index for dataset items, can be adjusted if resuming from a previous run
 
     debugViz = False
-    numWorkers = 6
+    numWorkers = 3
+    exportPngs = True
     
-    main(videoPath, outputDir, imageSize, frameInterval, vectorsNumbers, vectorTimeWindow, vectorTimeOffsets, temporalContextTimeWindow, manualStartIndex, DEBUGVIZ=debugViz, numWorkers=numWorkers)
+    main(
+        videoPath,
+        outputDir,
+        imageSize,
+        frameInterval,
+        vectorsNumbers,
+        vectorTimeWindow,
+        vectorTimeOffsets,
+        temporalContextTimeWindow,
+        manualStartIndex,
+        DEBUGVIZ=debugViz,
+        labelsOnly=True,
+        exportPngs=exportPngs,
+        numWorkers=numWorkers
+    )

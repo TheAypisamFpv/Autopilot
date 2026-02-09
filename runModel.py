@@ -624,25 +624,49 @@ def runModel(modelPath, videoPath, calibrationRoot, temporalContextTimeWindow=0.
             trainingParams = json.load(f)
         featDim = trainingParams.get('featDim', 512)
         hiddenDim = trainingParams.get('hiddenDim', 1024)
+        baseChannels = trainingParams.get('baseChannels', 32)
+        numHeads = trainingParams.get('numHeads', 4)
+        numLayers = trainingParams.get('numLayers', 2)
         predSteps = trainingParams.get('predSteps', 12)
         intervalSeconds = trainingParams.get('intervalSeconds', 0.25)
         vectorTimes = trainingParams.get('vectorTimes', None)
 
         modelName = trainingParams.get('modelName', 'unknown_model')
-        availableModelName = TrajectoryModel(featDim=featDim, hiddenDim=hiddenDim, predSteps=predSteps).to(device).name
+        availableModelName = TrajectoryModel(
+            featDim=featDim,
+            hiddenDim=hiddenDim,
+            baseChannels=baseChannels,
+            numHeads=numHeads,
+            numLayers=numLayers,
+            predSteps=predSteps,
+        ).to(device).name
         if modelName != availableModelName:
             raise ValueError(
                 f"Invalid model architecture. Model with architecture '{modelName}' was being loaded with the architecture '{availableModelName}'."
             )
 
-        print(f"Loaded training params from {paramsPath}: featDim={featDim}, hiddenDim={hiddenDim}, predSteps={predSteps}, intervalSeconds={intervalSeconds}")
+        print(
+            f"Loaded training params from {paramsPath}: featDim={featDim}, hiddenDim={hiddenDim}, "
+            f"baseChannels={baseChannels}, numHeads={numHeads}, numLayers={numLayers}, "
+            f"predSteps={predSteps}, intervalSeconds={intervalSeconds}"
+        )
     else:
         warnings.warn(f"{paramsPath} not found, using defaults (This may cause errors if model architecture mismatches.)\n")
         featDim, hiddenDim, predSteps = 512, 1024, 12
+        baseChannels, numHeads, numLayers = 32, 4, 2
         intervalSeconds = 0.25
         vectorTimes = None
 
-    model = TrajectoryModel(featDim=featDim, hiddenDim=hiddenDim, predSteps=predSteps, intervalSeconds=intervalSeconds, vectorTimes=vectorTimes).to(device)
+    model = TrajectoryModel(
+        featDim=featDim,
+        hiddenDim=hiddenDim,
+        baseChannels=baseChannels,
+        numHeads=numHeads,
+        numLayers=numLayers,
+        predSteps=predSteps,
+        intervalSeconds=intervalSeconds,
+        vectorTimes=vectorTimes,
+    ).to(device)
     model.load_state_dict(torch.load(modelPath, map_location=device))
     model.eval()
 

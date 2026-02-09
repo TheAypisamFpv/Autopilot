@@ -1,3 +1,4 @@
+import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -9,7 +10,8 @@ class ConvGNAct(nn.Module):
     def __init__(self, inCh, outCh, kernel=3, stride=1, padding=1, groups=32):
         super().__init__()
         self.conv = nn.Conv2d(inCh, outCh, kernel, stride, padding, bias=False)
-        gnGroups = min(groups, outCh)
+        gnGroups = math.gcd(outCh, min(groups, outCh))
+        gnGroups = max(1, gnGroups)
         self.gn = nn.GroupNorm(gnGroups, outCh)
         self.act = nn.SiLU(inplace=True)
 
@@ -294,7 +296,9 @@ class TrajectoryModel(nn.Module):
         intervalSeconds=0.25,
         totalSeconds=3.0,
         vectorTimes=None,
-        baseChannels=32,
+        baseChannels=48,
+        numHeads=8,
+        numLayers=4,
     ):
         super().__init__()
         if vectorTimes is None:
@@ -307,8 +311,8 @@ class TrajectoryModel(nn.Module):
             featDim=featDim + 2,
             hiddenDim=hiddenDim,
             predSteps=predSteps,
-            numHeads=4,
-            numLayers=2,
+            numHeads=numHeads,
+            numLayers=numLayers,
             dropout=0.1,
             vectorTimes=vectorTimes,
         )
@@ -352,7 +356,7 @@ if __name__ == "__main__":
     batchSize = 2
     dummyImg1 = torch.randn(batchSize, 3, 360, 640)
     dummyImg2 = torch.randn(batchSize, 3, 360, 640)
-    model = TrajectoryModel(featDim=256, hiddenDim=512, predSteps=12, useAuxDyn=True)
+    model = TrajectoryModel(featDim=384, hiddenDim=768, predSteps=12, useAuxDyn=True, baseChannels=48, numHeads=8, numLayers=4)
     model.eval()
 
     with torch.no_grad():
