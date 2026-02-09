@@ -2,7 +2,7 @@
 
 A vision-only CNN-Transformer trajectory prediction model that uses two consecutive front-camera frames and forecasts future vehicle motion over an ~3-second horizon using non-uniform `vectorTimes`.
 
-<a href="https://x.com/THEAYPISAMFPV/status/1982888965666681123">Video demo on 𝕏</a> (legacy Early Fusion + Attentive GRU model)
+[![Video demo on 𝕏](images/visualization/Autopilot_TrajectoryModel_EarlyFusion_AttentiveGRU_epoch19_timelapse.gif)](https://x.com/THEAYPISAMFPV/status/1982888965666681123) (legacy Early Fusion + Attentive GRU model)
 
 
 ## Overview
@@ -113,7 +113,7 @@ Here are the training curves for run13:
 
 Check out a legacy video demonstration of the model in action (at epoch 19):
 
-<a href="https://x.com/THEAYPISAMFPV/status/1982888965666681123">View the legacy demo on 𝕏</a>
+[![Legacy demo GIF](images/visualization/Autopilot_TrajectoryModel_EarlyFusion_AttentiveGRU_epoch19_timelapse.gif)](https://x.com/THEAYPISAMFPV/status/1982888965666681123)
 
 ## Q&A
 
