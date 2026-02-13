@@ -35,7 +35,7 @@ jointAlpha = 100
 scaleFactor = 1.0
 
 
-global DOWNSCALE, SHOWATTENTION, SHOWORIGINALTRAJ, USEGPU, DEBUG
+global DOWNSCALE, SHOWATTENTION, SHOWORIGINALTRAJ, USEGPU, DEBUG, USEGROUNDTRUTH
 
 
 def safeTimestampFromUs(timestampUs):
@@ -83,6 +83,15 @@ def putTextWithOutline(frame, text, org, fontFace, fontScale, color, thickness=1
 
 
 def loadCalibrationData(calibrationRoot, clipUuid, cameraName):
+    if cameraName == "gopro":
+        gopro_calib_path = os.path.join(os.path.dirname(__file__), "gopro_hero5_calibration.json")
+        with open(gopro_calib_path, 'r') as f:
+            calib = json.load(f)
+        intrinsics = calib["camera_intrinsics"]
+        extrinsics = calib["sensor_extrinsics"]
+        vehicleDims = calib["vehicle_dimensions"]
+        return intrinsics, extrinsics, vehicleDims
+
     cameraIntrinsicsPath = os.path.join(calibrationRoot, "camera_intrinsics")
     sensorExtrinsicsPath = os.path.join(calibrationRoot, "sensor_extrinsics")
     vehicleDimensionsPath = os.path.join(calibrationRoot, "vehicle_dimensions")
@@ -518,6 +527,7 @@ def visualizeFrame(
     intrinsics,
     extrinsics,
     carWidth,
+    trackWidth,
     carLength,
     rearAxleToCenter,
     viewModeLabel,
@@ -529,11 +539,13 @@ def visualizeFrame(
     gtOverlay = np.zeros((scaledFrame.shape[0], scaledFrame.shape[1], 4), dtype=np.uint8)
     predOverlay = np.zeros((scaledFrame.shape[0], scaledFrame.shape[1], 4), dtype=np.uint8)
 
-    if carWidth is not None:
-        gtThickness = max(1, int(round(carWidth * vecToPixel)))
-        predThickness = max(1, int(round(carWidth * 0.9 * vecToPixel)))
+    if trackWidth is not None:
+        gtThickness = max(1, int(round(trackWidth * vecToPixel)))
     else:
         gtThickness = int(vectorThickness * 1.5)
+    if carWidth is not None:
+        predThickness = max(1, int(round(carWidth * 0.9 * vecToPixel)))
+    else:
         predThickness = vectorThickness
 
     gtCanvas = drawTopDownRibbon(groundTruth, grayColor, gtThickness, carLength)
@@ -763,19 +775,40 @@ def runModel(modelPath, videoPath, calibrationRoot, temporalContextTimeWindow=0.
         print(f"Video file not found: {videoPath}")
         return
 
-    nvidiaInfo = resolveNvidiaEgomotionPaths(videoPath)
-    if not nvidiaInfo:
-        print("NVIDIA egomotion data not found for this video.")
-        return
+    # Detect GoPro video (path with 'test_drive')
+    isGopro = 'test_drive' in videoPath.lower() or 'gopro' in videoPath.lower()
+    cameraName = "gopro" if isGopro else "camera_front_wide_120fov"
+    usegroundtruth = not isGopro and USEGROUNDTRUTH  # For GoPro, don't use ground truth
 
-    egoData = loadEgomotionParquet(nvidiaInfo["egomotionPath"])
-    frameTimestamps = loadCameraTimestampsParquet(nvidiaInfo["timestampsPath"])
-    if frameTimestamps is None or len(frameTimestamps) == 0:
-        print(f"Camera timestamps missing or empty: {nvidiaInfo['timestampsPath']}")
-        return
+    if usegroundtruth:
+        nvidiaInfo = resolveNvidiaEgomotionPaths(videoPath)
+        if not nvidiaInfo:
+            print("NVIDIA egomotion data not found for this video.")
+            return
 
-    cameraName = "camera_front_wide_120fov"
-    intrinsics, extrinsics, vehicleDims = loadCalibrationData(calibrationRoot, nvidiaInfo["clipUuid"], cameraName)
+        egoData = loadEgomotionParquet(nvidiaInfo["egomotionPath"])
+        frameTimestamps = loadCameraTimestampsParquet(nvidiaInfo["timestampsPath"])
+        if frameTimestamps is None or len(frameTimestamps) == 0:
+            print(f"Camera timestamps missing or empty: {nvidiaInfo['timestampsPath']}")
+            return
+    else:
+        nvidiaInfo = None
+        egoData = None
+        frameTimestamps = None
+
+    if frameTimestamps is None:
+        cap = cv2.VideoCapture(videoPath)
+        if not cap.isOpened():
+            print("Cannot open video file.")
+            return
+        frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        fps = cap.get(cv2.CAP_PROP_FPS)
+        cap.release()
+        # Create dummy timestamps starting from now
+        startTime = datetime.now()
+        frameTimestamps = [int((startTime + timedelta(seconds=i / fps)).timestamp() * 1e6) for i in range(frame_count)]
+
+    intrinsics, extrinsics, vehicleDims = loadCalibrationData(calibrationRoot, nvidiaInfo["clipUuid"] if nvidiaInfo else "dummy", cameraName)
 
     if DEBUG:
         """DEBUG"""
@@ -795,7 +828,8 @@ def runModel(modelPath, videoPath, calibrationRoot, temporalContextTimeWindow=0.
         print("Calibration data missing. Make sure calibrationRoot points to the folder containing camera_intrinsics, sensor_extrinsics, vehicle_dimensions.")
         return
 
-    carWidth = vehicleDims.get('width', 2.0) if vehicleDims is not None else 2.0
+    carWidth = vehicleDims.get('width', 2.0) if vehicleDims is not None else 2.2
+    trackWidth = vehicleDims.get('track_width', None) if vehicleDims is not None else 2.0
     carLength = vehicleDims.get('length', 4.5) if vehicleDims is not None else 4.5
     rearAxleToCenter = vehicleDims.get('rear_axle_to_bbox_center', 0.0) if vehicleDims is not None else 0.0
 
@@ -847,7 +881,8 @@ def runModel(modelPath, videoPath, calibrationRoot, temporalContextTimeWindow=0.
                 if currentFrameIndex < len(frameTimestamps):
                     currentFrameTimestampUs = int(frameTimestamps[currentFrameIndex])
                     if currentFrameTimestampUs != np.iinfo(np.int64).min:
-                        currentEgoState = interpolateEgomotionState(egoData, currentFrameTimestampUs)
+                        if egoData is not None:
+                            currentEgoState = interpolateEgomotionState(egoData, currentFrameTimestampUs)
 
                 if currentEgoState is not None:
                     vx = float(currentEgoState['vx'])
@@ -947,6 +982,7 @@ def runModel(modelPath, videoPath, calibrationRoot, temporalContextTimeWindow=0.
                     intrinsics,
                     extrinsics,
                     carWidth,
+                    trackWidth,
                     carLength,
                     rearAxleToCenter,
                     viewModeLabel,
@@ -990,8 +1026,10 @@ if __name__ == '__main__':
     SHOWORIGINALTRAJ = True
     USEGPU = False
     DEBUG = False
+    USEGROUNDTRUTH = True
 
-    modelPath = r"C:\Users\Aypisam\Documents\VS_Python_Project\Autopilot\training\run21\best_model_0.1872.pth"
+    modelPath = r"C:\Users\Aypisam\Documents\VS_Python_Project\Autopilot\training\run21\best_model.pth"
+    # videoPath = r"C:\Users\Aypisam\Documents\VS_Python_Project\Autopilot\test_drive\2025.06.24"
     videoPath = r"C:\Users\Aypisam\Videos\Autopilot_Videos\Camera\camera_front_wide_120fov"
 
     calibrationRoot = r"C:\Users\Aypisam\Videos\Autopilot_Videos\calibration"
