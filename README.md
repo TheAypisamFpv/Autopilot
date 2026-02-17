@@ -4,7 +4,7 @@ A vision-only CNN-Transformer trajectory prediction model that uses two consecut
 
 [![Video demo on 𝕏](images/visualization/Autopilot_TrajectoryModel_EarlyFusion_AttentiveGRU_epoch19_timelapse.gif)](https://x.com/THEAYPISAMFPV/status/1982888965666681123)
 
-(legacy Early Fusion + Attentive GRU model)
+(legacy Early Fusion + Attentive GRU model, CNN-Transformer model is in training)
 
 
 ## Overview
