@@ -35,7 +35,7 @@ jointAlpha = 100
 scaleFactor = 1.0
 
 
-global DOWNSCALE, SHOWATTENTION, SHOWORIGINALTRAJ, USEGPU, DEBUG, USEGROUNDTRUTH
+global DOWNSCALE, SHOWATTENTION, SHOWORIGINALTRAJ, USEGPU, DEBUG, USEGROUNDTRUTH, REALTIME
 
 
 def safeTimestampFromUs(timestampUs):
@@ -854,6 +854,13 @@ def runModel(modelPath, videoPath, calibrationRoot, temporalContextTimeWindow=0.
     frameBuffer = []
     frameBufferSize = max(int(fps * temporalContextTimeWindow), 2)
     nextFrameTime = time.time()
+    # Realtime control: when REALTIME is True we'll keep video playback synced to wall-clock
+    realStartWallTime = None
+    realStartWallFrameIndex = None
+    try:
+        frameCount = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    except Exception:
+        frameCount = 0
 
     prediction = None
     labels = None
@@ -867,8 +874,40 @@ def runModel(modelPath, videoPath, calibrationRoot, temporalContextTimeWindow=0.
         while cap.isOpened():
             currentTime = time.time()
             if currentTime >= nextFrameTime:
+                # If REALTIME is enabled, advance the capture to the frame that matches
+                # the current wall-clock time (dropping/skipping frames if needed).
+                prefilled = False
+                if REALTIME:
+                    if realStartWallTime is None:
+                        # Anchor current capture position to wall-clock time
+                        realStartWallTime = time.time()
+                        realStartWallFrameIndex = int(cap.get(cv2.CAP_PROP_POS_FRAMES))
+                    # desired frame index relative to start anchor
+                    desiredFrame = realStartWallFrameIndex + int((time.time() - realStartWallTime) * fps)
+                    if frameCount > 0:
+                        desiredFrame = min(desiredFrame, max(0, frameCount - 1))
+                    currentPos = int(cap.get(cv2.CAP_PROP_POS_FRAMES))
+                    if desiredFrame > currentPos:
+                        # Seek and prefill the frame buffer so temporal spacing is preserved
+                        startFrame = max(0, desiredFrame - (frameBufferSize - 1))
+                        frameBuffer = []
+                        cap.set(cv2.CAP_PROP_POS_FRAMES, startFrame)
+                        for fidx in range(startFrame, desiredFrame + 1):
+                            r_seek, f_seek = cap.read()
+                            if not r_seek:
+                                break
+                            frameBuffer.append(f_seek)
+                        if len(frameBuffer) > 0:
+                            frame = frameBuffer[-1]
+                            ret = True
+                            prefilled = True
+                        else:
+                            ret = False
+                        # schedule next frame according to exact frame timing
+                        nextFrameTime = realStartWallTime + (desiredFrame + 1 - realStartWallFrameIndex) / fps
                 loopStart = time.perf_counter()
-                ret, frame = cap.read()
+                if not prefilled:
+                    ret, frame = cap.read()
                 if not ret:
                     break
 
@@ -1000,7 +1039,14 @@ def runModel(modelPath, videoPath, calibrationRoot, temporalContextTimeWindow=0.
                     flush=True,
                 )
 
-                nextFrameTime += timePerFrame
+                if REALTIME and realStartWallTime is not None:
+                    try:
+                        # Use current processed frame index to compute exact next frame wall time
+                        nextFrameTime = realStartWallTime + ((currentFrameIndex + 1 - realStartWallFrameIndex) / fps)
+                    except Exception:
+                        nextFrameTime += timePerFrame
+                else:
+                    nextFrameTime += timePerFrame
 
             key = cv2.waitKey(1)
             if key & 0xFF == ord('q'):
@@ -1027,9 +1073,10 @@ if __name__ == '__main__':
     USEGPU = False
     DEBUG = False
     USEGROUNDTRUTH = True
+    REALTIME = False
 
     modelPath = r"C:\Users\Aypisam\Documents\VS_Python_Project\Autopilot\training\run21\best_model.pth"
-    # videoPath = r"C:\Users\Aypisam\Documents\VS_Python_Project\Autopilot\test_drive\2025.06.24"
+    videoPath = r"C:\Users\Aypisam\Documents\VS_Python_Project\Autopilot\test_drive\2025.06.24"
     videoPath = r"C:\Users\Aypisam\Videos\Autopilot_Videos\Camera\camera_front_wide_120fov"
 
     calibrationRoot = r"C:\Users\Aypisam\Videos\Autopilot_Videos\calibration"
@@ -1046,5 +1093,4 @@ if __name__ == '__main__':
                     vidPath = os.path.join(videoPath, fileName)
                     runModel(modelPath, vidPath, calibrationRoot)
         else:
-            
             runModel(modelPath, videoPath, calibrationRoot)
