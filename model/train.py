@@ -15,9 +15,15 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import json
 import random
+import multiprocessing
+import traceback
 
 from CreateModel import TrajectoryModel
 from progressBar import getProgressBar
+
+# Set multiprocessing start method to 'spawn' for Windows compatibility
+if __name__ == '__main__':
+    multiprocessing.set_start_method('spawn', force=True)
 
 # Enable expandable segments for better memory management when supported.
 if torch.cuda.is_available() and os.name != "nt" and "PYTORCH_CUDA_ALLOC_CONF" not in os.environ:
@@ -130,50 +136,74 @@ class DrivingDataset(Dataset):
         return vectors, vectorTimes, speed, videoPath, prevFrameIndex, frameIndex
 
     def _readFramesFromVideo(self, videoPath, prevFrameIndex, frameIndex):
-        cap = cv2.VideoCapture(videoPath, cv2.CAP_MSMF)
-        if not cap.isOpened():
-            cap = cv2.VideoCapture(videoPath)
-        if not cap.isOpened():
-            return None, None
-
+        cap = None
         try:
+            cap = cv2.VideoCapture(videoPath, cv2.CAP_MSMF)
+            if not cap.isOpened():
+                cap = cv2.VideoCapture(videoPath)
+            if not cap.isOpened():
+                print(f"[DrivingDataset] Unable to open video: {videoPath}")
+                return None, None
+
             cap.set(cv2.CAP_PROP_POS_FRAMES, prevFrameIndex)
-            ret_prev, prevFrame = cap.read()
+            retPrev, prevFrame = cap.read()
 
             cap.set(cv2.CAP_PROP_POS_FRAMES, frameIndex)
-            ret_curr, currFrame = cap.read()
+            retCurr, currFrame = cap.read()
 
-            if not ret_prev or not ret_curr:
+            if not retPrev or not retCurr:
+                print(f"[DrivingDataset] Failed to read frames from {videoPath}: prev={retPrev}, curr={retCurr} ({prevFrameIndex},{frameIndex})")
                 return None, None
 
             prevFrame = cv2.cvtColor(prevFrame, cv2.COLOR_BGR2RGB)
             currFrame = cv2.cvtColor(currFrame, cv2.COLOR_BGR2RGB)
+            prevFrame = cv2.resize(prevFrame, (640, 360))
+            currFrame = cv2.resize(currFrame, (640, 360))
             return Image.fromarray(prevFrame), Image.fromarray(currFrame)
+        except Exception as e:
+            print(f"[DrivingDataset] Exception reading video {videoPath}: {e}")
+            traceback.print_exc()
+            return None, None
         finally:
-            cap.release()
+            try:
+                if cap is not None:
+                    cap.release()
+            except Exception:
+                pass
 
     def __getitem__(self, idx):
+        # Wrap __getitem__ to ensure any unexpected exception is printed (not silently swallowed)
         sampleId = self.samples[idx]
         labelPath = os.path.join(self.labelsDir, f"{sampleId}.txt")
-        vectors, vectorTimes, speed, videoPath, prevFrameIndex, frameIndex = self._parseLabelFile(labelPath)
+        try:
+            vectors, vectorTimes, speed, videoPath, prevFrameIndex, frameIndex = self._parseLabelFile(labelPath)
 
-        if self.labelsOnly and videoPath is not None and prevFrameIndex is not None and frameIndex is not None:
-            prevImage, currentImage = self._readFramesFromVideo(videoPath, prevFrameIndex, frameIndex)
-            if prevImage is None or currentImage is None:
-                raise RuntimeError(f"Failed to read frames from video: {videoPath} ({prevFrameIndex}, {frameIndex})")
-        else:
-            prevImgPath = os.path.join(self.imagesDir, f"{sampleId}_prev.png")
-            currentImgPath = os.path.join(self.imagesDir, f"{sampleId}_current.png")
-            prevImage = Image.open(prevImgPath).convert("RGB")
-            currentImage = Image.open(currentImgPath).convert("RGB")
+            if self.labelsOnly and videoPath is not None and prevFrameIndex is not None and frameIndex is not None:
+                prevImage, currentImage = self._readFramesFromVideo(videoPath, prevFrameIndex, frameIndex)
+                if prevImage is None or currentImage is None:
+                    raise RuntimeError(f"Failed to read frames from video: {videoPath} ({prevFrameIndex}, {frameIndex})")
+            else:
+                prevImgPath = os.path.join(self.imagesDir, f"{sampleId}_prev.png")
+                currentImgPath = os.path.join(self.imagesDir, f"{sampleId}_current.png")
+                try:
+                    prevImage = Image.open(prevImgPath).convert("RGB")
+                    currentImage = Image.open(currentImgPath).convert("RGB")
+                except Exception as e:
+                    print(f"[DrivingDataset] Error opening images for sample {sampleId}: {prevImgPath}, {currentImgPath} -> {e}")
+                    traceback.print_exc()
+                    raise
 
-        if self.transform:
-            prevImage = self.transform(prevImage)
-            currentImage = self.transform(currentImage)
+            if self.transform:
+                prevImage = self.transform(prevImage)
+                currentImage = self.transform(currentImage)
 
-        dynamicData = torch.tensor([speed], dtype=self.dtype)
+            dynamicData = torch.tensor([speed], dtype=self.dtype)
 
-        return prevImage, currentImage, dynamicData, torch.from_numpy(vectors).to(self.dtype), torch.from_numpy(vectorTimes).to(self.dtype)
+            return prevImage, currentImage, dynamicData, torch.from_numpy(vectors).to(self.dtype), torch.from_numpy(vectorTimes).to(self.dtype)
+        except Exception as e:
+            print(f"[DrivingDataset] Exception in __getitem__ for sample {sampleId}: {e}")
+            traceback.print_exc()
+            raise
 
 
 def getRunDir(baseDir="training"):
@@ -218,8 +248,8 @@ def trajectoryLossWithWeights(pred, target, perStepWeights, reduction="mean", de
     Returns:
         Tensor: Weighted loss value
     """
-    loss_fn = nn.SmoothL1Loss(reduction="none", beta=delta)
-    raw = loss_fn(pred, target).mean(dim=-1)
+    lossFn = nn.SmoothL1Loss(reduction="none", beta=delta)
+    raw = lossFn(pred, target).mean(dim=-1)
     weights = perStepWeights.to(raw.device).view(1, -1)
     weighted = raw * weights
     if reduction == "mean":
@@ -451,7 +481,17 @@ def trainModel(
     valDataset = DrivingDataset(datasetDir, transform=valTransform, maxSize=datasetMaxSize, predSteps=predSteps, verbose=False)
     totalSamples = len(baseDataset)
 
+    # Default workers; on Windows use 0 to avoid multiprocessing/persistent_workers issues
     numWorkers = 1
+    dataloaderTimeout = 60 # s
+    if os.name == 'nt':
+        numWorkers = 0
+        dataloaderPinMemory = False
+        dataloaderPersistentWorkers = False
+    else:
+        dataloaderPinMemory = True
+        # persistent workers can cause hangs; keep disabled by default
+        dataloaderPersistentWorkers = False
 
     balancedPath = os.path.join(datasetDir, "balanced.json")
     balancedData = None
@@ -566,11 +606,21 @@ def trainModel(
 
     def buildTrainLoader(trainSubsetIndices):
         subset = Subset(trainDataset, trainSubsetIndices)
-        return DataLoader(subset, batch_size=batchSize, shuffle=False, num_workers=numWorkers, pin_memory=True)
+        loaderKwargs = dict(batch_size=batchSize, shuffle=False, num_workers=numWorkers,
+                             pin_memory=dataloaderPinMemory, persistent_workers=dataloaderPersistentWorkers,
+                             timeout=dataloaderTimeout)
+        if numWorkers > 0:
+            loaderKwargs['prefetch_factor'] = 2
+        return DataLoader(subset, **loaderKwargs)
 
     def buildValLoader(valSubsetIndices):
         subset = Subset(valDataset, valSubsetIndices)
-        return DataLoader(subset, batch_size=batchSize, shuffle=False, num_workers=numWorkers, pin_memory=True)
+        loaderKwargs = dict(batch_size=batchSize, shuffle=False, num_workers=numWorkers,
+                             pin_memory=dataloaderPinMemory, persistent_workers=dataloaderPersistentWorkers,
+                             timeout=dataloaderTimeout)
+        if numWorkers > 0:
+            loaderKwargs['prefetch_factor'] = 2
+        return DataLoader(subset, **loaderKwargs)
 
     def computeClassCounts(indices):
         counts = {"straight": 0, "right": 0, "left": 0, "s": 0}
@@ -633,6 +683,11 @@ def trainModel(
     # Transformer-friendly optimizer
     optimizer = optim.AdamW(model.parameters(), lr=learningRate, weight_decay=0.01, betas=(0.9, 0.95), eps=1e-8)
 
+    if resumeModelPath:
+        # Set initial_lr for scheduler compatibility when resuming
+        for group in optimizer.param_groups:
+            group['initial_lr'] = learningRate
+
     trainSubsetSize = getTrainSubsetSize()
     batchesPerEpoch = math.ceil(trainSubsetSize / batchSize)
     totalSteps = math.ceil((batchesPerEpoch * numEpochs) / max(1, gradAccumSteps))
@@ -663,7 +718,17 @@ def trainModel(
 
     bestValLoss = float("inf")
     epochsNoImprove = 0
-    trainingStartTime = time.time()
+    # Use the creation time of the saved training params as the overall training start
+    # when resuming, so the displayed `Time: HH:mm:ss` reflects total time since
+    # the original run started. Fall back to now if unavailable.
+    paramsPath = os.path.join(runDir, "training_params.json")
+    if resumeModelPath and os.path.exists(paramsPath):
+        try:
+            trainingStartTime = os.path.getctime(paramsPath)
+        except Exception:
+            trainingStartTime = time.time()
+    else:
+        trainingStartTime = time.time()
 
     if resumeModelPath:
         bestValLoss = min(history["val_loss"])
@@ -861,11 +926,31 @@ def trainModel(
 
         if valLoss < bestValLoss:
             bestValLoss = valLoss
-            torch.save(model.state_dict(), os.path.join(runDir, "best_model.pth"))
+            checkpoint = {
+                'epoch': epoch,
+                'model_state_dict': model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'scheduler_state_dict': scheduler.state_dict(),
+                'best_val_loss': bestValLoss,
+                'epochs_no_improve': epochsNoImprove,
+                'history': history
+            }
+            torch.save(checkpoint, os.path.join(runDir, "best_checkpoint.pth"))
+            torch.save(model.state_dict(), os.path.join(runDir, "best_model.pth"))  # Keep for compatibility
             print(f"New best model saved: {bestValLoss:.4f}")
             epochsNoImprove = 0
         else:
-            torch.save(model.state_dict(), os.path.join(runDir, "last_model.pth"))
+            checkpoint = {
+                'epoch': epoch,
+                'model_state_dict': model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'scheduler_state_dict': scheduler.state_dict(),
+                'best_val_loss': bestValLoss,
+                'epochs_no_improve': epochsNoImprove,
+                'history': history
+            }
+            torch.save(checkpoint, os.path.join(runDir, "last_checkpoint.pth"))
+            torch.save(model.state_dict(), os.path.join(runDir, "last_model.pth"))  # Keep for compatibility
             epochsNoImprove += 1
 
         if epochsNoImprove >= patience:
@@ -900,11 +985,11 @@ if __name__ == "__main__":
     numHeads = 8                    # Transformer attention heads
     numLayers = 4                   # Transformer depth
     useAuxDyn = False               # Whether to enable auxiliary dynamics head (speed/accel prediction)
-    resumeModelPath = None          #"D:/VS_Python_Project/Autopilot/Autopilot/training/run18/best_model.pth"    # Set to path like "training/run13/best_model.pth" to resume training
+    resumeModelPath = r"D:\VS_Python_Project\Autopilot\Autopilot\training\run21\last_model.pth"          #"D:/VS_Python_Project/Autopilot/Autopilot/training/run18/best_model.pth"    # Set to path like "training/run13/best_model.pth" to resume training
 
     trainModel(
         datasetDir=datasetPath,
-        numEpochs=numEpochs,
+        numEpochs=numEpochs, 
         batchSize=batchSize,
         learningRate=learningRate,
         trainValSplit=trainValSplit,
