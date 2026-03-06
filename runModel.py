@@ -1070,16 +1070,16 @@ if __name__ == '__main__':
     DOWNSCALE = 2
     SHOWATTENTION = True
     SHOWORIGINALTRAJ = True
-    USEGPU = False
+    USEGPU = True
     DEBUG = False
     USEGROUNDTRUTH = True
     REALTIME = False
 
-    modelPath = r"C:\Users\Aypisam\Documents\VS_Python_Project\Autopilot\training\run21\best_model.pth"
-    videoPath = r"C:\Users\Aypisam\Documents\VS_Python_Project\Autopilot\test_drive\2025.06.24"
-    videoPath = r"C:\Users\Aypisam\Videos\Autopilot_Videos\Camera\camera_front_wide_120fov"
+    modelPath = r"D:\VS_Python_Project\Autopilot\Autopilot\training\run21\last_model.pth"
+    videoPath = r"D:\VS_Python_Project\Autopilot\Autopilot\Test_drive\2025\2025.06.24"
+    # videoPath = r"F:\Projects\Autopilot\nvidia_dataset\camera\camera_front_wide_120fov"
 
-    calibrationRoot = r"C:\Users\Aypisam\Videos\Autopilot_Videos\calibration"
+    calibrationRoot = r"F:\Projects\Autopilot\nvidia_dataset\calibration"
 
     # if video path is a list, run on each video
     if isinstance(videoPath, list):

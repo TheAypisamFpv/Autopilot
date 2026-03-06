@@ -15,9 +15,14 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import json
 import random
+import multiprocessing
 
 from CreateModel import TrajectoryModel
 from progressBar import getProgressBar
+
+# Set multiprocessing start method to 'spawn' for Windows compatibility
+if __name__ == '__main__':
+    multiprocessing.set_start_method('spawn', force=True)
 
 # Enable expandable segments for better memory management when supported.
 if torch.cuda.is_available() and os.name != "nt" and "PYTORCH_CUDA_ALLOC_CONF" not in os.environ:
@@ -148,6 +153,8 @@ class DrivingDataset(Dataset):
 
             prevFrame = cv2.cvtColor(prevFrame, cv2.COLOR_BGR2RGB)
             currFrame = cv2.cvtColor(currFrame, cv2.COLOR_BGR2RGB)
+            prevFrame = cv2.resize(prevFrame, (640, 360))
+            currFrame = cv2.resize(currFrame, (640, 360))
             return Image.fromarray(prevFrame), Image.fromarray(currFrame)
         finally:
             cap.release()
@@ -466,6 +473,7 @@ def trainModel(
         "s": balancedData.get("s", []) if balancedData else [],
     }
 
+
     sampleIndexMap = {sampleId: idx for idx, sampleId in enumerate(baseDataset.samples)}
     classIndexBuckets = {key: [] for key in classBuckets}
     indexToClass = {}
@@ -566,11 +574,11 @@ def trainModel(
 
     def buildTrainLoader(trainSubsetIndices):
         subset = Subset(trainDataset, trainSubsetIndices)
-        return DataLoader(subset, batch_size=batchSize, shuffle=False, num_workers=numWorkers, pin_memory=True)
+        return DataLoader(subset, batch_size=batchSize, shuffle=False, num_workers=numWorkers, pin_memory=True, persistent_workers=True, prefetch_factor=2)
 
     def buildValLoader(valSubsetIndices):
         subset = Subset(valDataset, valSubsetIndices)
-        return DataLoader(subset, batch_size=batchSize, shuffle=False, num_workers=numWorkers, pin_memory=True)
+        return DataLoader(subset, batch_size=batchSize, shuffle=False, num_workers=numWorkers, pin_memory=True, persistent_workers=True, prefetch_factor=2)
 
     def computeClassCounts(indices):
         counts = {"straight": 0, "right": 0, "left": 0, "s": 0}
@@ -633,6 +641,11 @@ def trainModel(
     # Transformer-friendly optimizer
     optimizer = optim.AdamW(model.parameters(), lr=learningRate, weight_decay=0.01, betas=(0.9, 0.95), eps=1e-8)
 
+    if resumeModelPath:
+        # Set initial_lr for scheduler compatibility when resuming
+        for group in optimizer.param_groups:
+            group['initial_lr'] = learningRate
+
     trainSubsetSize = getTrainSubsetSize()
     batchesPerEpoch = math.ceil(trainSubsetSize / batchSize)
     totalSteps = math.ceil((batchesPerEpoch * numEpochs) / max(1, gradAccumSteps))
@@ -663,7 +676,17 @@ def trainModel(
 
     bestValLoss = float("inf")
     epochsNoImprove = 0
-    trainingStartTime = time.time()
+    # Use the creation time of the saved training params as the overall training start
+    # when resuming, so the displayed `Time: HH:mm:ss` reflects total time since
+    # the original run started. Fall back to now if unavailable.
+    paramsPath = os.path.join(runDir, "training_params.json")
+    if resumeModelPath and os.path.exists(paramsPath):
+        try:
+            trainingStartTime = os.path.getctime(paramsPath)
+        except Exception:
+            trainingStartTime = time.time()
+    else:
+        trainingStartTime = time.time()
 
     if resumeModelPath:
         bestValLoss = min(history["val_loss"])
@@ -861,11 +884,31 @@ def trainModel(
 
         if valLoss < bestValLoss:
             bestValLoss = valLoss
-            torch.save(model.state_dict(), os.path.join(runDir, "best_model.pth"))
+            checkpoint = {
+                'epoch': epoch,
+                'model_state_dict': model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'scheduler_state_dict': scheduler.state_dict(),
+                'best_val_loss': bestValLoss,
+                'epochs_no_improve': epochsNoImprove,
+                'history': history
+            }
+            torch.save(checkpoint, os.path.join(runDir, "best_checkpoint.pth"))
+            torch.save(model.state_dict(), os.path.join(runDir, "best_model.pth"))  # Keep for compatibility
             print(f"New best model saved: {bestValLoss:.4f}")
             epochsNoImprove = 0
         else:
-            torch.save(model.state_dict(), os.path.join(runDir, "last_model.pth"))
+            checkpoint = {
+                'epoch': epoch,
+                'model_state_dict': model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'scheduler_state_dict': scheduler.state_dict(),
+                'best_val_loss': bestValLoss,
+                'epochs_no_improve': epochsNoImprove,
+                'history': history
+            }
+            torch.save(checkpoint, os.path.join(runDir, "last_checkpoint.pth"))
+            torch.save(model.state_dict(), os.path.join(runDir, "last_model.pth"))  # Keep for compatibility
             epochsNoImprove += 1
 
         if epochsNoImprove >= patience:
@@ -900,11 +943,11 @@ if __name__ == "__main__":
     numHeads = 8                    # Transformer attention heads
     numLayers = 4                   # Transformer depth
     useAuxDyn = False               # Whether to enable auxiliary dynamics head (speed/accel prediction)
-    resumeModelPath = None          #"D:/VS_Python_Project/Autopilot/Autopilot/training/run18/best_model.pth"    # Set to path like "training/run13/best_model.pth" to resume training
+    resumeModelPath = r"D:\VS_Python_Project\Autopilot\Autopilot\training\run21\last_model.pth"          #"D:/VS_Python_Project/Autopilot/Autopilot/training/run18/best_model.pth"    # Set to path like "training/run13/best_model.pth" to resume training
 
     trainModel(
         datasetDir=datasetPath,
-        numEpochs=numEpochs,
+        numEpochs=numEpochs, 
         batchSize=batchSize,
         learningRate=learningRate,
         trainValSplit=trainValSplit,
