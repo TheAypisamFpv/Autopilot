@@ -16,7 +16,6 @@ import matplotlib.pyplot as plt
 import json
 import random
 import multiprocessing
-import traceback
 
 from CreateModel import TrajectoryModel
 from progressBar import getProgressBar
@@ -136,23 +135,20 @@ class DrivingDataset(Dataset):
         return vectors, vectorTimes, speed, videoPath, prevFrameIndex, frameIndex
 
     def _readFramesFromVideo(self, videoPath, prevFrameIndex, frameIndex):
-        cap = None
-        try:
-            cap = cv2.VideoCapture(videoPath, cv2.CAP_MSMF)
-            if not cap.isOpened():
-                cap = cv2.VideoCapture(videoPath)
-            if not cap.isOpened():
-                print(f"[DrivingDataset] Unable to open video: {videoPath}")
-                return None, None
+        cap = cv2.VideoCapture(videoPath, cv2.CAP_MSMF)
+        if not cap.isOpened():
+            cap = cv2.VideoCapture(videoPath)
+        if not cap.isOpened():
+            return None, None
 
+        try:
             cap.set(cv2.CAP_PROP_POS_FRAMES, prevFrameIndex)
-            retPrev, prevFrame = cap.read()
+            ret_prev, prevFrame = cap.read()
 
             cap.set(cv2.CAP_PROP_POS_FRAMES, frameIndex)
-            retCurr, currFrame = cap.read()
+            ret_curr, currFrame = cap.read()
 
-            if not retPrev or not retCurr:
-                print(f"[DrivingDataset] Failed to read frames from {videoPath}: prev={retPrev}, curr={retCurr} ({prevFrameIndex},{frameIndex})")
+            if not ret_prev or not ret_curr:
                 return None, None
 
             prevFrame = cv2.cvtColor(prevFrame, cv2.COLOR_BGR2RGB)
@@ -160,50 +156,31 @@ class DrivingDataset(Dataset):
             prevFrame = cv2.resize(prevFrame, (640, 360))
             currFrame = cv2.resize(currFrame, (640, 360))
             return Image.fromarray(prevFrame), Image.fromarray(currFrame)
-        except Exception as e:
-            print(f"[DrivingDataset] Exception reading video {videoPath}: {e}")
-            traceback.print_exc()
-            return None, None
         finally:
-            try:
-                if cap is not None:
-                    cap.release()
-            except Exception:
-                pass
+            cap.release()
 
     def __getitem__(self, idx):
-        # Wrap __getitem__ to ensure any unexpected exception is printed (not silently swallowed)
         sampleId = self.samples[idx]
         labelPath = os.path.join(self.labelsDir, f"{sampleId}.txt")
-        try:
-            vectors, vectorTimes, speed, videoPath, prevFrameIndex, frameIndex = self._parseLabelFile(labelPath)
+        vectors, vectorTimes, speed, videoPath, prevFrameIndex, frameIndex = self._parseLabelFile(labelPath)
 
-            if self.labelsOnly and videoPath is not None and prevFrameIndex is not None and frameIndex is not None:
-                prevImage, currentImage = self._readFramesFromVideo(videoPath, prevFrameIndex, frameIndex)
-                if prevImage is None or currentImage is None:
-                    raise RuntimeError(f"Failed to read frames from video: {videoPath} ({prevFrameIndex}, {frameIndex})")
-            else:
-                prevImgPath = os.path.join(self.imagesDir, f"{sampleId}_prev.png")
-                currentImgPath = os.path.join(self.imagesDir, f"{sampleId}_current.png")
-                try:
-                    prevImage = Image.open(prevImgPath).convert("RGB")
-                    currentImage = Image.open(currentImgPath).convert("RGB")
-                except Exception as e:
-                    print(f"[DrivingDataset] Error opening images for sample {sampleId}: {prevImgPath}, {currentImgPath} -> {e}")
-                    traceback.print_exc()
-                    raise
+        if self.labelsOnly and videoPath is not None and prevFrameIndex is not None and frameIndex is not None:
+            prevImage, currentImage = self._readFramesFromVideo(videoPath, prevFrameIndex, frameIndex)
+            if prevImage is None or currentImage is None:
+                raise RuntimeError(f"Failed to read frames from video: {videoPath} ({prevFrameIndex}, {frameIndex})")
+        else:
+            prevImgPath = os.path.join(self.imagesDir, f"{sampleId}_prev.png")
+            currentImgPath = os.path.join(self.imagesDir, f"{sampleId}_current.png")
+            prevImage = Image.open(prevImgPath).convert("RGB")
+            currentImage = Image.open(currentImgPath).convert("RGB")
 
-            if self.transform:
-                prevImage = self.transform(prevImage)
-                currentImage = self.transform(currentImage)
+        if self.transform:
+            prevImage = self.transform(prevImage)
+            currentImage = self.transform(currentImage)
 
-            dynamicData = torch.tensor([speed], dtype=self.dtype)
+        dynamicData = torch.tensor([speed], dtype=self.dtype)
 
-            return prevImage, currentImage, dynamicData, torch.from_numpy(vectors).to(self.dtype), torch.from_numpy(vectorTimes).to(self.dtype)
-        except Exception as e:
-            print(f"[DrivingDataset] Exception in __getitem__ for sample {sampleId}: {e}")
-            traceback.print_exc()
-            raise
+        return prevImage, currentImage, dynamicData, torch.from_numpy(vectors).to(self.dtype), torch.from_numpy(vectorTimes).to(self.dtype)
 
 
 def getRunDir(baseDir="training"):
@@ -248,8 +225,8 @@ def trajectoryLossWithWeights(pred, target, perStepWeights, reduction="mean", de
     Returns:
         Tensor: Weighted loss value
     """
-    lossFn = nn.SmoothL1Loss(reduction="none", beta=delta)
-    raw = lossFn(pred, target).mean(dim=-1)
+    loss_fn = nn.SmoothL1Loss(reduction="none", beta=delta)
+    raw = loss_fn(pred, target).mean(dim=-1)
     weights = perStepWeights.to(raw.device).view(1, -1)
     weighted = raw * weights
     if reduction == "mean":
@@ -481,17 +458,7 @@ def trainModel(
     valDataset = DrivingDataset(datasetDir, transform=valTransform, maxSize=datasetMaxSize, predSteps=predSteps, verbose=False)
     totalSamples = len(baseDataset)
 
-    # Default workers; on Windows use 0 to avoid multiprocessing/persistent_workers issues
     numWorkers = 1
-    dataloaderTimeout = 60 # s
-    if os.name == 'nt':
-        numWorkers = 0
-        dataloaderPinMemory = False
-        dataloaderPersistentWorkers = False
-    else:
-        dataloaderPinMemory = True
-        # persistent workers can cause hangs; keep disabled by default
-        dataloaderPersistentWorkers = False
 
     balancedPath = os.path.join(datasetDir, "balanced.json")
     balancedData = None
@@ -505,6 +472,7 @@ def trainModel(
         "left": balancedData.get("left", []) if balancedData else [],
         "s": balancedData.get("s", []) if balancedData else [],
     }
+
 
     sampleIndexMap = {sampleId: idx for idx, sampleId in enumerate(baseDataset.samples)}
     classIndexBuckets = {key: [] for key in classBuckets}
@@ -606,21 +574,11 @@ def trainModel(
 
     def buildTrainLoader(trainSubsetIndices):
         subset = Subset(trainDataset, trainSubsetIndices)
-        loaderKwargs = dict(batch_size=batchSize, shuffle=False, num_workers=numWorkers,
-                             pin_memory=dataloaderPinMemory, persistent_workers=dataloaderPersistentWorkers,
-                             timeout=dataloaderTimeout)
-        if numWorkers > 0:
-            loaderKwargs['prefetch_factor'] = 2
-        return DataLoader(subset, **loaderKwargs)
+        return DataLoader(subset, batch_size=batchSize, shuffle=False, num_workers=numWorkers, pin_memory=True, persistent_workers=True, prefetch_factor=2)
 
     def buildValLoader(valSubsetIndices):
         subset = Subset(valDataset, valSubsetIndices)
-        loaderKwargs = dict(batch_size=batchSize, shuffle=False, num_workers=numWorkers,
-                             pin_memory=dataloaderPinMemory, persistent_workers=dataloaderPersistentWorkers,
-                             timeout=dataloaderTimeout)
-        if numWorkers > 0:
-            loaderKwargs['prefetch_factor'] = 2
-        return DataLoader(subset, **loaderKwargs)
+        return DataLoader(subset, batch_size=batchSize, shuffle=False, num_workers=numWorkers, pin_memory=True, persistent_workers=True, prefetch_factor=2)
 
     def computeClassCounts(indices):
         counts = {"straight": 0, "right": 0, "left": 0, "s": 0}
