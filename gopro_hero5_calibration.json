@@ -9,14 +9,14 @@
         "fw_poly_4": 0.0
     },
     "sensor_extrinsics": {
-        "_comment": "https://articulatedrobotics.xyz/tools/rotation-calculator/ (calibration for 2025.06.24/)",
+        "_comment": "https://articulatedrobotics.xyz/tools/rotation-calculator/ (calibration for 2026.03.05/)",
         "x": 0.556,
         "y": 0.0,
         "z": 1.16,
-        "qx": -0.44499671605031127,
-        "qy": 0.4545194776720423,
-        "qz": -0.5416752204197032,
-        "qw": 0.5495251793179621
+        "qw": 0.550815,
+        "qx": -0.460271,
+        "qy": 0.471902,
+        "qz": -0.511920
     },
     "vehicle_dimensions": {
         "length": 3.405,
