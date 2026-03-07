@@ -16,6 +16,7 @@ import matplotlib.pyplot as plt
 import json
 import random
 import multiprocessing
+from collections import deque
 
 from CreateModel import TrajectoryModel
 from progressBar import getProgressBar
@@ -30,13 +31,14 @@ if torch.cuda.is_available() and os.name != "nt" and "PYTORCH_CUDA_ALLOC_CONF" n
 
 
 class DrivingDataset(Dataset):
+    _inMemoryEgoHistoryCache = {}
     """
     Dataset for trajectory prediction.
     Loads paired images (previous and current) and trajectory vectors.
     Optionally filters samples using 'balanced.json' if present.
     """
 
-    def __init__(self, datasetDir, transform=None, maxSize=None, predSteps=6, dtype=torch.float32, verbose=True):
+    def __init__(self, datasetDir, transform=None, maxSize=None, predSteps=6, dtype=torch.float32, verbose=True, loadEgoHistory=True):
         self.datasetDir = datasetDir
         self.labelsDir = os.path.join(datasetDir, "labels")
         self.imagesDir = os.path.join(datasetDir, "images")
@@ -46,6 +48,7 @@ class DrivingDataset(Dataset):
         self.maxSize = maxSize
         self.labelsOnly = False
         self.verbose = verbose
+        self.loadEgoHistory = loadEgoHistory
 
         if not os.path.exists(self.imagesDir):
             self.labelsOnly = True
@@ -81,15 +84,107 @@ class DrivingDataset(Dataset):
             if self.verbose:
                 print(f"No balanced.json found - using {effectiveSamples} / {totalSamples} samples")
 
-    def __len__(self):
         if self.maxSize is not None:
-            return min(len(self.samples), self.maxSize)
+            self.samples = self.samples[:self.maxSize]
+
+        if self.verbose:
+            print(f"Active samples: {len(self.samples)}")
+
+        self.egoHistoryArray = self._loadOrBuildEgoHistoryCache() if self.loadEgoHistory else None
+
+    def __getstate__(self):
+        state = self.__dict__.copy()
+        state["egoHistoryArray"] = None
+        state["verbose"] = False
+        return state
+
+    def __setstate__(self, state):
+        self.__dict__.update(state)
+
+    def __len__(self):
         return len(self.samples)
+
+    def _getEgoHistoryCachePath(self):
+        cacheFilename = f"egoHistoryCache_pred{self.predSteps}_count{len(self.samples)}.npz"
+        return os.path.join(self.datasetDir, cacheFilename)
+
+    def _getCacheAnchors(self):
+        if not self.samples:
+            return np.array([], dtype=np.str_)
+
+        anchorIndices = sorted({
+            0,
+            min(31, len(self.samples) - 1),
+            min(127, len(self.samples) - 1),
+            len(self.samples) - 1,
+        })
+        return np.array([self.samples[i] for i in anchorIndices], dtype=np.str_)
+
+    def _loadOrBuildEgoHistoryCache(self):
+        cachePath = self._getEgoHistoryCachePath()
+        cacheAnchors = self._getCacheAnchors()
+        inMemoryCache = DrivingDataset._inMemoryEgoHistoryCache.get(cachePath)
+        if inMemoryCache is not None:
+            egoHistory, cachedAnchors = inMemoryCache
+            if (
+                egoHistory.ndim == 3
+                and egoHistory.shape[0] == len(self.samples)
+                and egoHistory.shape[1:] == (8, 3)
+                and egoHistory.dtype == np.float32
+                and np.array_equal(cachedAnchors.astype(np.str_), cacheAnchors)
+            ):
+                if self.verbose:
+                    print(f"Loaded ego history cache from memory: {cachePath}")
+                return egoHistory
+
+        if os.path.exists(cachePath):
+            try:
+                with np.load(cachePath, allow_pickle=False) as cacheData:
+                    egoHistory = cacheData["egoHistory"]
+                    cachedAnchors = cacheData["anchors"]
+
+                if (
+                    egoHistory.ndim == 3
+                    and egoHistory.shape[0] == len(self.samples)
+                    and egoHistory.shape[1:] == (8, 3)
+                    and egoHistory.dtype == np.float32
+                    and np.array_equal(cachedAnchors.astype(np.str_), cacheAnchors)
+                ):
+                    DrivingDataset._inMemoryEgoHistoryCache[cachePath] = (egoHistory, cachedAnchors)
+                    if self.verbose:
+                        print(f"Loaded ego history cache: {cachePath}")
+                    return egoHistory
+
+                if self.verbose:
+                    print("Ego history cache mismatch. Rebuilding cache...")
+            except Exception:
+                if self.verbose:
+                    print("Failed to read ego history cache. Rebuilding cache...")
+
+        egoHistory = self._buildEgoHistoryMap()
+        DrivingDataset._inMemoryEgoHistoryCache[cachePath] = (egoHistory, cacheAnchors)
+        try:
+            np.savez(cachePath, egoHistory=egoHistory, anchors=cacheAnchors)
+            if self.verbose:
+                print(f"Saved ego history cache: {cachePath}")
+        except Exception:
+            if self.verbose:
+                print("Could not save ego history cache. Continuing without persistent cache.")
+
+        return egoHistory
+
+    def _ensureEgoHistoryArrayLoaded(self):
+        if not self.loadEgoHistory:
+            return
+        if self.egoHistoryArray is None:
+            self.egoHistoryArray = self._loadOrBuildEgoHistoryCache()
 
     def _parseLabelFile(self, labelPath):
         vectors = None
         vectorTimes = None
         speed = 0.0
+        acceleration = 0.0
+        turnRate = 0.0
         videoPath = None
         prevFrameIndex = None
         frameIndex = None
@@ -116,6 +211,10 @@ class DrivingDataset(Dataset):
                         vectorTimes = np.array(timesList[:self.predSteps], dtype=np.float32)
                 elif line.startswith("speed"):
                     speed = float(line.strip().split(" : ")[1])
+                elif line.startswith("acceleration"):
+                    acceleration = float(line.strip().split(" : ")[1])
+                elif line.startswith("turnRate"):
+                    turnRate = float(line.strip().split(" : ")[1])
                 elif line.startswith("video"):
                     videoPath = line.strip().split(" : ", 1)[1]
                     """temporary FIX for folder renaming"""
@@ -132,7 +231,101 @@ class DrivingDataset(Dataset):
         if vectorTimes is None:
             vectorTimes = np.zeros((self.predSteps,), dtype=np.float32)
 
-        return vectors, vectorTimes, speed, videoPath, prevFrameIndex, frameIndex
+        return vectors, vectorTimes, speed, acceleration, turnRate, videoPath, prevFrameIndex, frameIndex
+
+    def _parseSampleId(self, sampleId):
+        clipKey, separator, framePart = sampleId.rpartition("_")
+        if separator and framePart.isdigit():
+            return clipKey, int(framePart)
+        return sampleId, -1
+
+    def _loadDynamicState(self, sampleId):
+        labelPath = os.path.join(self.labelsDir, f"{sampleId}.txt")
+        speed = 0.0
+        acceleration = 0.0
+        turnRate = 0.0
+        foundSpeed = False
+        foundAcceleration = False
+        foundTurnRate = False
+
+        with open(labelPath, "r") as f:
+            for line in f:
+                if not foundSpeed and line.startswith("speed"):
+                    speed = float(line.strip().split(" : ")[1])
+                    foundSpeed = True
+                elif not foundAcceleration and line.startswith("acceleration"):
+                    acceleration = float(line.strip().split(" : ")[1])
+                    foundAcceleration = True
+                elif not foundTurnRate and line.startswith("turnRate"):
+                    turnRate = float(line.strip().split(" : ")[1])
+                    foundTurnRate = True
+
+                if foundSpeed and foundAcceleration and foundTurnRate:
+                    break
+
+        return np.array([speed, acceleration, turnRate], dtype=np.float32)
+
+    def _buildEgoHistoryMap(self):
+        totalSamples = len(self.samples)
+        egoHistoryArray = np.zeros((totalSamples, 8, 3), dtype=np.float32)
+        clipGroups = {}
+        progressModulo = 1000
+
+        if self.verbose:
+            print("\nPreparing clip groups for ego history...")
+
+        for sampleIndex, sampleId in enumerate(self.samples):
+            clipKey, frameOrder = self._parseSampleId(sampleId)
+            clipGroups.setdefault(clipKey, []).append((frameOrder, sampleIndex))
+
+            if self.verbose and ((sampleIndex + 1) % progressModulo == 0 or sampleIndex + 1 == totalSamples):
+                completion = (sampleIndex + 1) / max(1, totalSamples)
+                print(
+                    f"{getProgressBar(completion, wheelIndex=sampleIndex, maxbarLength=60)}"
+                    f"Grouping samples for ego history ({sampleIndex + 1}/{totalSamples})",
+                    end='\r',
+                    flush=True,
+                )
+
+        if self.verbose:
+            print()
+            print(f"\nBuilding ego history for {len(clipGroups)} clips...")
+
+        processedSamples = 0
+
+        for clipKey, entries in clipGroups.items():
+            if any(frameOrder >= 0 for frameOrder, _ in entries):
+                sortedEntries = sorted(entries, key=lambda item: item[0])
+            else:
+                sortedEntries = sorted(entries, key=lambda item: item[1])
+
+            stateHistory = deque(maxlen=8)
+            for _, sampleIndex in sortedEntries:
+                sampleId = self.samples[sampleIndex]
+                currentState = self._loadDynamicState(sampleId)
+                stateHistory.append(currentState)
+
+                statesList = list(stateHistory)
+                if len(statesList) < 8:
+                    firstState = statesList[0]
+                    statesList = [firstState] * (8 - len(statesList)) + statesList
+
+                egoHistoryArray[sampleIndex] = np.asarray(statesList, dtype=np.float32)
+
+                processedSamples += 1
+                if self.verbose and (processedSamples % progressModulo == 0 or processedSamples == totalSamples):
+                    completion = processedSamples / max(1, totalSamples)
+                    print(
+                        f"{getProgressBar(completion, wheelIndex=processedSamples, maxbarLength=60)}"
+                        f"Computing ego history ({processedSamples}/{totalSamples})",
+                        end='\r',
+                        flush=True,
+                    )
+
+        if self.verbose:
+            print()
+
+        return egoHistoryArray
 
     def _readFramesFromVideo(self, videoPath, prevFrameIndex, frameIndex):
         cap = cv2.VideoCapture(videoPath, cv2.CAP_MSMF)
@@ -162,7 +355,7 @@ class DrivingDataset(Dataset):
     def __getitem__(self, idx):
         sampleId = self.samples[idx]
         labelPath = os.path.join(self.labelsDir, f"{sampleId}.txt")
-        vectors, vectorTimes, speed, videoPath, prevFrameIndex, frameIndex = self._parseLabelFile(labelPath)
+        vectors, vectorTimes, speed, acceleration, turnRate, videoPath, prevFrameIndex, frameIndex = self._parseLabelFile(labelPath)
 
         if self.labelsOnly and videoPath is not None and prevFrameIndex is not None and frameIndex is not None:
             prevImage, currentImage = self._readFramesFromVideo(videoPath, prevFrameIndex, frameIndex)
@@ -178,9 +371,14 @@ class DrivingDataset(Dataset):
             prevImage = self.transform(prevImage)
             currentImage = self.transform(currentImage)
 
-        dynamicData = torch.tensor([speed], dtype=self.dtype)
+        dynamicData = torch.tensor([speed, acceleration, turnRate], dtype=self.dtype)
+        egoHistory = np.tile(np.array([speed, acceleration, turnRate], dtype=np.float32), (8, 1))
+        if self.loadEgoHistory:
+            self._ensureEgoHistoryArrayLoaded()
+            if self.egoHistoryArray is not None and idx < len(self.egoHistoryArray):
+                egoHistory = self.egoHistoryArray[idx]
 
-        return prevImage, currentImage, dynamicData, torch.from_numpy(vectors).to(self.dtype), torch.from_numpy(vectorTimes).to(self.dtype)
+        return prevImage, currentImage, dynamicData, torch.from_numpy(vectors).to(self.dtype), torch.from_numpy(vectorTimes).to(self.dtype), torch.from_numpy(egoHistory).to(self.dtype)
 
 
 def getRunDir(baseDir="training"):
@@ -234,6 +432,68 @@ def trajectoryLossWithWeights(pred, target, perStepWeights, reduction="mean", de
     elif reduction == "sum":
         return weighted.sum()
     return weighted
+
+
+def buildDeltaTimes(vectorTimes):
+    if vectorTimes.dim() == 1:
+        vectorTimes = vectorTimes.unsqueeze(0)
+    deltaTimes = vectorTimes.clone()
+    if vectorTimes.size(1) > 1:
+        deltaTimes[:, 1:] = vectorTimes[:, 1:] - vectorTimes[:, :-1]
+    deltaTimes = torch.clamp(deltaTimes, min=1e-3)
+    return deltaTimes
+
+
+def buildKinematicTargets(gtVectors, vectorTimes):
+    deltaTimes = buildDeltaTimes(vectorTimes)
+    lateralStep = gtVectors[:, :, 0]
+    longitudinalStep = gtVectors[:, :, 1]
+
+    signedLongitudinalSpeed = longitudinalStep / deltaTimes
+    headings = torch.atan2(lateralStep, longitudinalStep + 1e-9)
+    previousHeading = torch.zeros_like(headings)
+    if headings.size(1) > 1:
+        previousHeading[:, 1:] = headings[:, :-1]
+    headingDelta = torch.atan2(torch.sin(headings - previousHeading), torch.cos(headings - previousHeading))
+    yawRate = headingDelta / deltaTimes
+
+    gtKinematic = torch.stack([signedLongitudinalSpeed, yawRate], dim=-1)
+    gtPositions = torch.cumsum(gtVectors, dim=1)
+    return gtKinematic, gtPositions
+
+
+def kinematicIntegration(preds, vectorTimes):
+    deltaTimes = buildDeltaTimes(vectorTimes)
+    batchSize, predSteps, _ = preds.shape
+
+    yaw = torch.zeros(batchSize, device=preds.device, dtype=preds.dtype)
+    posX = torch.zeros(batchSize, device=preds.device, dtype=preds.dtype)
+    posY = torch.zeros(batchSize, device=preds.device, dtype=preds.dtype)
+    positions = []
+
+    for stepIndex in range(predSteps):
+        stepDt = deltaTimes[:, stepIndex]
+        speed = preds[:, stepIndex, 0]
+        yawRate = preds[:, stepIndex, 1]
+
+        yaw = yaw + yawRate * stepDt
+        posX = posX + speed * torch.sin(yaw) * stepDt
+        posY = posY + speed * torch.cos(yaw) * stepDt
+        positions.append(torch.stack([posX, posY], dim=-1))
+
+    return torch.stack(positions, dim=1)
+
+
+def smoothnessKinematicLoss(preds, gtVectors, gtPositions, perStepWeights, vectorTimes):
+    mainLoss = trajectoryLossWithWeights(preds, gtVectors, perStepWeights, reduction="mean")
+    integratedPositions = kinematicIntegration(preds, vectorTimes)
+    integrationLoss = nn.SmoothL1Loss()(integratedPositions, gtPositions)
+
+    jerkSpeed = torch.diff(torch.diff(preds[:, :, 0], dim=1), dim=1).abs().mean()
+    jerkYaw = torch.diff(torch.diff(preds[:, :, 1], dim=1), dim=1).abs().mean()
+    jerkLoss = 0.08 * (jerkSpeed + jerkYaw)
+
+    return mainLoss + 0.45 * integrationLoss + jerkLoss
 
 
 def adeFde(pred, target):
@@ -453,12 +713,14 @@ def trainModel(
         transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
     ])
 
-    baseDataset = DrivingDataset(datasetDir, transform=None, maxSize=datasetMaxSize, predSteps=predSteps, verbose=True)
-    trainDataset = DrivingDataset(datasetDir, transform=trainTransform, maxSize=datasetMaxSize, predSteps=predSteps, verbose=False)
-    valDataset = DrivingDataset(datasetDir, transform=valTransform, maxSize=datasetMaxSize, predSteps=predSteps, verbose=False)
+    baseDataset = DrivingDataset(datasetDir, transform=None, maxSize=datasetMaxSize, predSteps=predSteps, verbose=True, loadEgoHistory=False)
+    trainDataset = DrivingDataset(datasetDir, transform=trainTransform, maxSize=datasetMaxSize, predSteps=predSteps, verbose=False, loadEgoHistory=True)
+    valDataset = DrivingDataset(datasetDir, transform=valTransform, maxSize=datasetMaxSize, predSteps=predSteps, verbose=False, loadEgoHistory=True)
     totalSamples = len(baseDataset)
 
     numWorkers = 1
+    if os.name == "nt":
+        print("Using DataLoader num_workers=1 on Windows with worker-safe lazy ego history loading.")
 
     balancedPath = os.path.join(datasetDir, "balanced.json")
     balancedData = None
@@ -574,11 +836,29 @@ def trainModel(
 
     def buildTrainLoader(trainSubsetIndices):
         subset = Subset(trainDataset, trainSubsetIndices)
-        return DataLoader(subset, batch_size=batchSize, shuffle=False, num_workers=numWorkers, pin_memory=True, persistent_workers=True, prefetch_factor=2)
+        loaderKwargs = {
+            "batch_size": batchSize,
+            "shuffle": False,
+            "num_workers": numWorkers,
+            "pin_memory": True,
+        }
+        if numWorkers > 0:
+            loaderKwargs["persistent_workers"] = os.name != "nt"
+            loaderKwargs["prefetch_factor"] = 2
+        return DataLoader(subset, **loaderKwargs)
 
     def buildValLoader(valSubsetIndices):
         subset = Subset(valDataset, valSubsetIndices)
-        return DataLoader(subset, batch_size=batchSize, shuffle=False, num_workers=numWorkers, pin_memory=True, persistent_workers=True, prefetch_factor=2)
+        loaderKwargs = {
+            "batch_size": batchSize,
+            "shuffle": False,
+            "num_workers": numWorkers,
+            "pin_memory": True,
+        }
+        if numWorkers > 0:
+            loaderKwargs["persistent_workers"] = os.name != "nt"
+            loaderKwargs["prefetch_factor"] = 2
+        return DataLoader(subset, **loaderKwargs)
 
     def computeClassCounts(indices):
         counts = {"straight": 0, "right": 0, "left": 0, "s": 0}
@@ -720,12 +1000,15 @@ def trainModel(
         optimizer.zero_grad()
         accumSteps = 0
 
-        for i, (prevImg, currentImg, dynamicData, labels, vectorTimesBatch) in enumerate(trainLoader):
+        for i, (prevImg, currentImg, dynamicData, labels, vectorTimesBatch, egoHistory) in enumerate(trainLoader):
             prevImg = prevImg.to(device)
             currentImg = currentImg.to(device)
             labels = labels.to(device)
             vectorTimesBatch = vectorTimesBatch.to(device)
+            egoHistory = egoHistory.to(device)
             batchSize = labels.size(0)
+
+            gtKinematic, gtPositions = buildKinematicTargets(labels, vectorTimesBatch)
 
             perStepWeights = perStepWeightsBase
             if vectorTimesBatch.numel() and torch.any(vectorTimesBatch > 0):
@@ -734,7 +1017,7 @@ def trainModel(
                 perStepWeights = torch.exp(-meanTimes / max(maxT, 1e-6)) * 1.5 + 0.3
 
             with autocast(device_type='cuda', enabled=useAmp):
-                preds, auxOut, _ = model(currentImg, prevImg, gtTraj=labels, teacherForcing=True, tfRatio=tfRatio, vectorTimes=vectorTimesBatch)
+                preds, auxOut, _ = model(currentImg, prevImg, gtTraj=gtKinematic, teacherForcing=True, tfRatio=tfRatio, egoHistory=egoHistory, vectorTimes=vectorTimesBatch)
                 
                 # Check for NaN in predictions
                 if torch.isnan(preds).any():
@@ -745,7 +1028,7 @@ def trainModel(
                     print(f"CurrentImg stats: min={currentImg.min()}, max={currentImg.max()}, mean={currentImg.mean()}")
                     continue  # or break to stop training
                 
-                lossMain = trajectoryLossWithWeights(preds, labels, perStepWeights, reduction="mean")
+                lossMain = smoothnessKinematicLoss(preds, gtKinematic, gtPositions, perStepWeights, vectorTimesBatch)
                 loss = lossMain
 
                 if useAuxDyn and auxOut is not None:
@@ -759,15 +1042,19 @@ def trainModel(
             if accumSteps == gradAccumSteps:
                 scaler.unscale_(optimizer)
                 torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                scaleBeforeStep = scaler.get_scale()
                 scaler.step(optimizer)
                 scaler.update()
                 optimizer.zero_grad()
-                scheduler.step()
-                globalStep += 1
+                optimizerStepped = scaler.get_scale() >= scaleBeforeStep
+                if optimizerStepped:
+                    scheduler.step()
+                    globalStep += 1
                 accumSteps = 0
 
             runningLoss += lossMain.item() * batchSize
-            ade, fde = adeFde(preds.detach(), labels)
+            predPositions = kinematicIntegration(preds.detach(), vectorTimesBatch)
+            ade, fde = adeFde(predPositions, gtPositions)
             runningADE += ade * batchSize
             runningFDE += fde * batchSize
 
@@ -807,14 +1094,17 @@ def trainModel(
         valCursor = 0
 
         with torch.no_grad():
-            for i, (prevImg, currentImg, dynamicData, labels, vectorTimesBatch) in enumerate(valLoader):
+            for i, (prevImg, currentImg, dynamicData, labels, vectorTimesBatch, egoHistory) in enumerate(valLoader):
                 prevImg = prevImg.to(device)
                 currentImg = currentImg.to(device)
                 labels = labels.to(device)
                 vectorTimesBatch = vectorTimesBatch.to(device)
+                egoHistory = egoHistory.to(device)
                 batchSize = labels.size(0)
                 batchIndices = valSubsetIndices[valCursor:valCursor + batchSize]
                 valCursor += batchSize
+
+                gtKinematic, gtPositions = buildKinematicTargets(labels, vectorTimesBatch)
 
                 perStepWeights = perStepWeightsBase
                 if vectorTimesBatch.numel() and torch.any(vectorTimesBatch > 0):
@@ -822,20 +1112,21 @@ def trainModel(
                     maxT = float(meanTimes.max()) if meanTimes.numel() else 1.0
                     perStepWeights = torch.exp(-meanTimes / max(maxT, 1e-6)) * 1.5 + 0.3
                 with autocast(device_type='cuda', enabled=useAmp):
-                    preds, _, _ = model(currentImg, prevImg, teacherForcing=False, tfRatio=0.0, vectorTimes=vectorTimesBatch)
+                    preds, _, _ = model(currentImg, prevImg, teacherForcing=False, tfRatio=0.0, egoHistory=egoHistory, vectorTimes=vectorTimesBatch)
                     
                     # Check for NaN in validation predictions
                     if torch.isnan(preds).any():
                         print(f"NaN detected in validation predictions at epoch {epoch+1}, batch {i}")
                         continue
                     
-                    lossMain = trajectoryLossWithWeights(preds, labels, perStepWeights, reduction="mean")
+                    lossMain = smoothnessKinematicLoss(preds, gtKinematic, gtPositions, perStepWeights, vectorTimesBatch)
                 valLoss += lossMain.item() * labels.size(0)
-                ade, fde = adeFde(preds, labels)
+                predPositions = kinematicIntegration(preds, vectorTimesBatch)
+                ade, fde = adeFde(predPositions, gtPositions)
                 valADE += ade * labels.size(0)
                 valFDE += fde * labels.size(0)
 
-                diff = preds - labels
+                diff = predPositions - gtPositions
                 dists = torch.norm(diff, dim=-1)
                 adePerSample = dists.mean(dim=1).detach().cpu().numpy()
                 fdePerSample = dists[:, -1].detach().cpu().numpy()
@@ -943,7 +1234,7 @@ if __name__ == "__main__":
     numHeads = 8                    # Transformer attention heads
     numLayers = 4                   # Transformer depth
     useAuxDyn = False               # Whether to enable auxiliary dynamics head (speed/accel prediction)
-    resumeModelPath = r"D:\VS_Python_Project\Autopilot\Autopilot\training\run21\last_model.pth"          #"D:/VS_Python_Project/Autopilot/Autopilot/training/run18/best_model.pth"    # Set to path like "training/run13/best_model.pth" to resume training
+    resumeModelPath = None#r"D:\VS_Python_Project\Autopilot\Autopilot\training\run21\last_model.pth"  # Set to path like "training/run13/best_model.pth" to resume training
 
     trainModel(
         datasetDir=datasetPath,

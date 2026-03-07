@@ -19,6 +19,20 @@ class ConvGNAct(nn.Module):
         return self.act(self.gn(self.conv(x)))
 
 
+class FiLM(nn.Module):
+    def __init__(self, featDim: int, contextDim: int):
+        super().__init__()
+        self.scaleProj = nn.Linear(contextDim, featDim)
+        self.shiftProj = nn.Linear(contextDim, featDim)
+
+    def forward(self, fmap: torch.Tensor, context: torch.Tensor) -> torch.Tensor:
+        if context is None:
+            return fmap
+        scale = self.scaleProj(context).unsqueeze(-1).unsqueeze(-1)
+        shift = self.shiftProj(context).unsqueeze(-1).unsqueeze(-1)
+        return fmap * (1.0 + scale) + shift
+
+
 class SEBlock(nn.Module):
     def __init__(self, ch, reduction=8):
         super().__init__()
@@ -144,8 +158,9 @@ class MotionFpnEncoder(nn.Module):
         self.fuse8 = nn.Conv2d(baseChannels * 3 * 3, featDim, kernel_size=1, bias=False)
         self.fuse16 = nn.Conv2d(baseChannels * 4 * 3, featDim, kernel_size=1, bias=False)
         self.fpnFuse = ConvGNAct(featDim, featDim, kernel=3, padding=1)
+        self.egoFusion = FiLM(featDim + 2, 256)
 
-    def forward(self, imgT, imgTm1, returnMotionMap=False):
+    def forward(self, imgT, imgTm1, egoContext=None, returnMotionMap=False):
         feat8T, feat16T = self.backbone(imgT)
         feat8Tm1, feat16Tm1 = self.backbone(imgTm1)
 
@@ -169,6 +184,7 @@ class MotionFpnEncoder(nn.Module):
         yCoords = torch.linspace(-1.0, 1.0, height, device=fmap.device).view(1, 1, height, 1).expand(batchSize, 1, height, width)
         xCoords = torch.linspace(-1.0, 1.0, width, device=fmap.device).view(1, 1, 1, width).expand(batchSize, 1, height, width)
         fmap = torch.cat([fmap, xCoords, yCoords], dim=1)
+        fmap = self.egoFusion(fmap, egoContext)
 
         if returnMotionMap:
             return fmap, motionMap.squeeze(1)
@@ -179,128 +195,84 @@ class MotionFpnEncoder(nn.Module):
 # -------------------------
 # Decoder: lightweight transformer over spatial memory
 # -------------------------
-class TransformerDecoderLayerWithAttn(nn.Module):
-    def __init__(self, dModel, numHeads, dimFeedforward=1024, dropout=0.1, activation="gelu"):
+class EgoStateEncoder(nn.Module):
+    def __init__(self, inputDim: int = 3, hiddenDim: int = 256):
         super().__init__()
-        self.selfAttn = nn.MultiheadAttention(dModel, numHeads, dropout=dropout, batch_first=True)
-        self.crossAttn = nn.MultiheadAttention(dModel, numHeads, dropout=dropout, batch_first=True)
-        self.linear1 = nn.Linear(dModel, dimFeedforward)
-        self.linear2 = nn.Linear(dimFeedforward, dModel)
-        self.dropout = nn.Dropout(dropout)
-        self.dropout1 = nn.Dropout(dropout)
-        self.dropout2 = nn.Dropout(dropout)
-        self.dropout3 = nn.Dropout(dropout)
-        self.norm1 = nn.LayerNorm(dModel)
-        self.norm2 = nn.LayerNorm(dModel)
-        self.norm3 = nn.LayerNorm(dModel)
-        self.activation = nn.GELU() if activation == "gelu" else nn.ReLU()
+        self.hiddenDim = hiddenDim
+        self.gru = nn.GRU(input_size=inputDim, hidden_size=hiddenDim, num_layers=1, batch_first=True)
 
-    def forward(self, tgt, memory):
-        attnSelf, selfWeights = self.selfAttn(tgt, tgt, tgt, need_weights=True, average_attn_weights=False)
-        tgt = self.norm1(tgt + self.dropout1(attnSelf))
-
-        attnCross, crossWeights = self.crossAttn(tgt, memory, memory, need_weights=True, average_attn_weights=False)
-        tgt = self.norm2(tgt + self.dropout2(attnCross))
-
-        ff = self.linear2(self.dropout(self.activation(self.linear1(tgt))))
-        tgt = self.norm3(tgt + self.dropout3(ff))
-        return tgt, selfWeights, crossWeights
+    def forward(self, egoHistory: torch.Tensor) -> torch.Tensor:
+        if egoHistory is None:
+            return None
+        _, hidden = self.gru(egoHistory)
+        return hidden[-1]
 
 
-class VectorTransformerDecoder(nn.Module):
-    def __init__(self, featDim=194, hiddenDim=256, predSteps=12, numHeads=4, numLayers=2, dropout=0.1, vectorTimes=None):
+class RecurrentDeltaKinematicDecoder(nn.Module):
+    def __init__(self, featDim=386, hiddenDim=640, predSteps=12, numHeads=8, numLayers=3):
         super().__init__()
         self.predSteps = predSteps
-        self.memoryProj = nn.Conv2d(featDim, hiddenDim, kernel_size=1, bias=False)
-        self.memoryNorm = nn.LayerNorm(hiddenDim)
-
-        self.layers = nn.ModuleList([
-            TransformerDecoderLayerWithAttn(
-                dModel=hiddenDim,
-                numHeads=numHeads,
-                dimFeedforward=hiddenDim * 4,
-                dropout=dropout,
-                activation="gelu",
-            )
-            for _ in range(numLayers)
-        ])
-
-        self.queryEmbed = nn.Parameter(torch.randn(predSteps, hiddenDim))
-        self.timeMlp = nn.Sequential(
-            nn.Linear(1, hiddenDim),
-            nn.SiLU(inplace=True),
-            nn.Linear(hiddenDim, hiddenDim)
+        self.hiddenDim = hiddenDim
+        self.memoryProj = nn.Conv2d(featDim, hiddenDim, 1, bias=False)
+        self.gru = nn.GRU(
+            input_size=hiddenDim + 256 + 2,
+            hidden_size=hiddenDim,
+            num_layers=2,
+            batch_first=True,
+            dropout=0.1,
         )
-
-        if vectorTimes is None:
-            vectorTimes = [float(i + 1) for i in range(predSteps)]
-        self.register_buffer("vectorTimes", torch.tensor(vectorTimes, dtype=torch.float32), persistent=False)
-
-        self.outHead = nn.Sequential(
+        self.queryProj = nn.Linear(hiddenDim, hiddenDim)
+        self.deltaHead = nn.Sequential(
             nn.Linear(hiddenDim, hiddenDim // 2),
             nn.SiLU(inplace=True),
-            nn.Linear(hiddenDim // 2, 2)
+            nn.Linear(hiddenDim // 2, 2),
+        )
+        self.register_buffer(
+            "vectorTimes",
+            torch.tensor([0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.85, 1.1, 1.35, 1.6, 2.3, 3.0], dtype=torch.float32),
+            persistent=False,
         )
 
-    def forward(self, featMap, vectorTimes=None):
-        batchSize = featMap.size(0)
-        height, width = featMap.shape[-2], featMap.shape[-1]
-        memory = self.memoryProj(featMap)
-        memory = memory.flatten(2).permute(0, 2, 1)
-        memory = self.memoryNorm(memory)
+    def forward(self, featMap, egoContext, vectorTimes=None, teacherForcing=True, tfRatio=0.9, gtTraj=None):
+        batchSize = featMap.shape[0]
+        memory = self.memoryProj(featMap).flatten(2).permute(0, 2, 1)
+        visualContext = memory.mean(dim=1)
 
-        query = self.queryEmbed.unsqueeze(0).expand(batchSize, -1, -1)
-        if vectorTimes is None:
-            vectorTimesTensor = self.vectorTimes.to(featMap.device)
-        else:
-            if isinstance(vectorTimes, torch.Tensor):
-                vectorTimesTensor = vectorTimes.to(device=featMap.device, dtype=torch.float32)
+        if egoContext is None:
+            egoContext = torch.zeros(batchSize, 256, device=featMap.device, dtype=featMap.dtype)
+
+        currentState = torch.zeros(batchSize, 2, device=featMap.device, dtype=featMap.dtype)
+        predictions = []
+        hiddenState = None
+
+        for stepIndex in range(self.predSteps):
+            useTeacherForcing = False
+            if teacherForcing and gtTraj is not None:
+                useTeacherForcing = bool(torch.rand(1, device=featMap.device).item() < tfRatio)
+
+            if useTeacherForcing:
+                previousState = gtTraj[:, stepIndex, :]
             else:
-                vectorTimesTensor = torch.tensor(vectorTimes, dtype=torch.float32, device=featMap.device)
+                previousState = currentState
 
-        if vectorTimesTensor.dim() == 1:
-            if vectorTimesTensor.numel() > self.predSteps:
-                vectorTimesTensor = vectorTimesTensor[:self.predSteps]
-            elif vectorTimesTensor.numel() < self.predSteps:
-                padCount = self.predSteps - vectorTimesTensor.numel()
-                padVal = vectorTimesTensor[-1] if vectorTimesTensor.numel() > 0 else torch.tensor(0.0, device=featMap.device)
-                vectorTimesTensor = torch.cat([vectorTimesTensor, padVal.repeat(padCount)])
-            timeEmbed = self.timeMlp(vectorTimesTensor.view(1, -1, 1))
-        elif vectorTimesTensor.dim() == 2:
-            if vectorTimesTensor.size(1) > self.predSteps:
-                vectorTimesTensor = vectorTimesTensor[:, :self.predSteps]
-            elif vectorTimesTensor.size(1) < self.predSteps:
-                padCount = self.predSteps - vectorTimesTensor.size(1)
-                padVal = vectorTimesTensor[:, -1:] if vectorTimesTensor.size(1) > 0 else torch.zeros((batchSize, 1), device=featMap.device)
-                vectorTimesTensor = torch.cat([vectorTimesTensor, padVal.repeat(1, padCount)], dim=1)
-            timeEmbed = self.timeMlp(vectorTimesTensor.unsqueeze(-1))
-        else:
-            raise ValueError(f"vectorTimes must be 1D or 2D, got shape {tuple(vectorTimesTensor.shape)}")
-        query = query + timeEmbed
+            stepInput = torch.cat([visualContext, egoContext, previousState], dim=1).unsqueeze(1)
+            gruOut, hiddenState = self.gru(stepInput, hiddenState)
+            deltaState = self.deltaHead(self.queryProj(gruOut.squeeze(1)))
+            currentState = currentState + deltaState
+            predictions.append(currentState)
 
-        decoded = query
-        lastCrossWeights = None
-        for layer in self.layers:
-            decoded, _, lastCrossWeights = layer(decoded, memory)
-
-        preds = self.outHead(decoded)
-        attnMaps = [None for _ in range(self.predSteps)]
-        if lastCrossWeights is not None:
-            crossAvg = lastCrossWeights.mean(dim=1)
-            if crossAvg.dim() == 3 and crossAvg.size(-1) == height * width:
-                crossAvg = crossAvg.view(batchSize, self.predSteps, height, width)
-                attnMaps = [crossAvg[:, i] for i in range(self.predSteps)]
-        return preds, attnMaps
+        preds = torch.stack(predictions, dim=1)
+        return preds
 
 
 # -------------------------
 # Full model wrapper
 # -------------------------
-class TrajectoryModel(nn.Module):
+class SmoothKinematicTrajectoryModel(nn.Module):
     def __init__(
         self,
-        featDim=192,
-        hiddenDim=256,
+        featDim=384,
+        hiddenDim=640,
         predSteps=12,
         useAuxDyn=False,
         intervalSeconds=0.25,
@@ -308,61 +280,58 @@ class TrajectoryModel(nn.Module):
         vectorTimes=None,
         baseChannels=48,
         numHeads=8,
-        numLayers=4,
+        numLayers=3,
     ):
         super().__init__()
-        if vectorTimes is None:
-            totalSeconds = float(totalSeconds) if totalSeconds is not None else float(intervalSeconds * predSteps)
-            vectorTimes = buildNonUniformTimeOffsets(predSteps, totalSeconds)
-
-        self.vectorTimes = vectorTimes
+        self.vectorTimes = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.85, 1.1, 1.35, 1.6, 2.3, 3.0]
         self.encoder = MotionFpnEncoder(featDim=featDim, baseChannels=baseChannels)
-        self.decoder = VectorTransformerDecoder(
+        self.egoEncoder = EgoStateEncoder()
+        self.decoder = RecurrentDeltaKinematicDecoder(
             featDim=featDim + 2,
             hiddenDim=hiddenDim,
             predSteps=predSteps,
             numHeads=numHeads,
             numLayers=numLayers,
-            dropout=0.1,
-            vectorTimes=vectorTimes,
         )
-
-        self.use_aux_dyn = useAuxDyn
-        if useAuxDyn:
-            self.aux = nn.Sequential(
-                nn.AdaptiveAvgPool2d((1, 1)),
-                nn.Flatten(),
-                nn.Linear(featDim + 2, 128),
-                nn.SiLU(inplace=True),
-                nn.Linear(128, 2)
-            )
-
-        self.name = "TrajectoryModel_MotionFpn_Transformer_V1"
-
-        # Input and output specs
+        self.name = "SmoothKinematicTrajectoryModelV1"
         self.inputSpec = {
             'image_size': (360, 640),
             'temporal_delay_seconds': 0.1
         }
         self.outputSpec = {
             'num_vectors': predSteps,
-            'intervalSeconds': float(vectorTimes[0]) if vectorTimes else intervalSeconds,
-            'totalSeconds': float(vectorTimes[-1]) if vectorTimes else float(predSteps * intervalSeconds),
+            'intervalSeconds': float(self.vectorTimes[0]),
+            'totalSeconds': float(self.vectorTimes[-1]),
         }
+        self.use_aux_dyn = False
 
-    def forward(self, imgT, imgTm1, gtTraj=None, teacherForcing=False, tfRatio=0.9, vectorTimes=None, returnMotionMap=False):
+    def forward(self, imgT, imgTm1, gtTraj=None, teacherForcing=True, tfRatio=0.9, egoHistory=None, vectorTimes=None, returnMotionMap=False):
+        if egoHistory is None:
+            batchSize = imgT.shape[0]
+            egoHistory = torch.zeros(batchSize, 8, 3, device=imgT.device, dtype=imgT.dtype)
+        egoContext = self.egoEncoder(egoHistory)
         if returnMotionMap:
-            fmap, motionMap = self.encoder(imgT, imgTm1, returnMotionMap=True)
+            fmap, motionMap = self.encoder(imgT, imgTm1, egoContext=egoContext, returnMotionMap=True)
         else:
-            fmap = self.encoder(imgT, imgTm1)
+            fmap = self.encoder(imgT, imgTm1, egoContext=egoContext)
             motionMap = None
-        preds, attnMaps = self.decoder(fmap, vectorTimes=vectorTimes)
+        preds = self.decoder(
+            fmap,
+            egoContext,
+            vectorTimes=vectorTimes,
+            teacherForcing=teacherForcing,
+            tfRatio=tfRatio,
+            gtTraj=gtTraj,
+        )
         aux = None
-        if self.use_aux_dyn:
-            aux = self.aux(fmap)
+        attnMaps = None
         if returnMotionMap:
             return preds, aux, attnMaps, motionMap
         return preds, aux, attnMaps
+
+
+class TrajectoryModel(SmoothKinematicTrajectoryModel):
+    pass
 
 
 # -------------------------
@@ -372,11 +341,12 @@ if __name__ == "__main__":
     batchSize = 2
     dummyImg1 = torch.randn(batchSize, 3, 360, 640)
     dummyImg2 = torch.randn(batchSize, 3, 360, 640)
-    model = TrajectoryModel(featDim=384, hiddenDim=768, predSteps=12, useAuxDyn=True, baseChannels=48, numHeads=8, numLayers=4)
+    dummyEgoHistory = torch.randn(batchSize, 8, 3)
+    model = SmoothKinematicTrajectoryModel(featDim=384, hiddenDim=640, predSteps=12, baseChannels=48, numHeads=8, numLayers=3)
     model.eval()
 
     with torch.no_grad():
-        preds, aux, attn = model(dummyImg1, dummyImg2)
+        preds, aux, attn = model(dummyImg1, dummyImg2, egoHistory=dummyEgoHistory)
 
     print("Model:", model.name)
     print("preds:", preds.shape)
