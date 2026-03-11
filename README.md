@@ -1,18 +1,18 @@
 # Vision-Only Autonomous Vehicle model
 
-A vision-only CNN-Transformer trajectory prediction model that uses two consecutive front-camera frames and forecasts future vehicle motion over an ~3-second horizon using non-uniform `vectorTimes`.
+A vision-only motion-aware CNN planner that uses two consecutive front-camera frames and forecasts future vehicle motion over an ~3-second horizon using non-uniform `vectorTimes`.
 
 [![Video demo on 𝕏](https://github.com/TheAypisamFpv/Autopilot/blob/0a340a3f47bce3185cd542dd45415e015f0389b0/images/visualization/Autopilot_TrajectoryModel_EarlyFusion_AttentiveGRU_epoch19_timelapse.gif)](https://x.com/THEAYPISAMFPV/status/1982888965666681123)
 
-(legacy Early Fusion + Attentive GRU model, CNN-Transformer model is in training)
+(legacy Early Fusion + Attentive GRU model shown above; the current main model is a motion-FPN cross-attention kinematic planner)
 
 
 ## Overview
 
-This project implements a vision-based network that predicts the future trajectory of the vehicle from:
+This project implements a vision-based network that predicts the future motion of the vehicle from:
 - Two RGB frames from a front-facing camera (360x640, separated by 0.1s for temporal context)
 
-The model outputs 12 two-dimensional vectors representing the predicted travel path (x, y) in the 2D road plane over a 3-second interval, using a non-uniform timing schedule (0.1s x 6, 0.25s x 4, 0.7s x 2).
+The current model predicts 12 future kinematic states `[signed_speed_mps, yaw_rate_radps]` over a 3-second interval and integrates them into the travel path in the vehicle frame. The prediction horizon uses a non-uniform timing schedule (0.1s x 6, 0.25s x 4, 0.7s x 2).
 
 ## Data Visualization
 
@@ -26,17 +26,19 @@ The following visualization shows examples of processed pose-derived trajectory 
 
 ![Model architecture diagram](model/architecture/trajectory_model_arch.svg)
 
-The network uses a motion-aware encoder with a lightweight transformer decoder:
+The network uses a motion-aware encoder with a cross-attention recurrent planner:
 
 - **Motion Backbone + FPN Fusion**: Two shared CNN backbones extract multi-scale features from the current and previous frames. Per-scale features are concatenated with their temporal differences, fused through 1x1 convolutions, and combined with a top-down FPN-style merge.
 
 - **Spatial Coordinate Channels**: Normalized `x`/`y` frame-space coordinate channels are appended to the fused feature map to provide explicit spatial context.
 
-- **Vector Transformer Decoder**: A transformer decoder with learned query embeddings and a `vectorTimes` MLP predicts future displacement vectors in parallel and exposes cross-attention maps for visualization.
+- **Cross-Attention Kinematic Decoder**: A recurrent decoder predicts future signed speed and yaw-rate deltas while re-attending to the fused image memory at every step. Each step is conditioned on ego-state context, the previous predicted state, and the non-uniform time offset embedding.
 
-- **Optional Auxiliary Head**: A small MLP on pooled features can predict auxiliary dynamics (2D output).
+- **Per-Step Attention Maps**: The planner exposes cross-attention maps that show where each rollout step is reading from the visual memory.
 
-By default, the model predicts 12 vectors over a 3-second horizon with a non-uniform timing schedule (0.1s x 6, 0.25s x 4, 0.7s x 2). You can override `vectorTimes` at runtime. *(Model is in training; changing `vectorTimes` may affect performance.)*
+- **Ego Shortcut Regularization**: During training, the ego-state context is randomly dropped on some batches so the planner stays visually grounded instead of over-relying on past-motion extrapolation.
+
+By default, the model predicts 12 future states over a 3-second horizon with a non-uniform timing schedule (0.1s x 6, 0.25s x 4, 0.7s x 2). You can override `vectorTimes` at runtime. *(Model is in training; changing `vectorTimes` may affect performance.)*
 
 
 ## Dataset
@@ -93,12 +95,12 @@ The generated dataset is over 130Go with 432501 datapoints.
 |:---:|:---:|:---:|
 | ![Roundabout Entry](images/dataset/dataset_exemple_roundaboutEnter.png) | ![In Roundabout](images/dataset/dataset_exemple_inRoundabout.png) | ![Roundabout Exit](images/dataset/dataset_exemple_roundaboutExit.png) |
 
-Each sample in the dataset includes the image pair and the ground truth trajectory vectors representing the vehicle's future path. (Legacy records may include speed metadata, but the current model is vision-only.)
+Each sample in the dataset includes the image pair and the ground truth trajectory vectors representing the vehicle's future path. Training converts those vectors into per-step signed speed and yaw-rate targets for the current model. (Legacy records may include speed metadata, but the current model is vision-only.)
 
 ## Training
 
 ### Current run in training: **run21**
-Run21 uses the latest model (`TrajectoryModel_MotionFpn_Transformer_V1`) on NVIDIA's dataset.
+Run21 used the previous motion-FPN model generation. The current main architecture in code is `TrajectoryModel_MotionFpn_CrossAttentionKinematic_V2`.
 
 ### Latest working model: **run13**
 The latest model that achieved good performance is `TrajectoryModel_EarlyFusion_AttentiveGRU`.

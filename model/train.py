@@ -589,7 +589,7 @@ def trainModel(
         hiddenDim (int): Hidden dimension for model.
         baseChannels (int): Base channel count for the backbone.
         numHeads (int): Number of attention heads in the decoder.
-        numLayers (int): Number of transformer decoder layers.
+        numLayers (int): Number of recurrent planner layers.
         predSteps (int or None): Number of prediction steps (inferred from labels if None).
         intervalSeconds (float or None): Time interval between prediction steps (inferred from labels if None).
         deviceOverride (str or None): Device to use ('cpu' or 'cuda'), or None for auto-detect.
@@ -918,7 +918,7 @@ def trainModel(
     with open(os.path.join(runDir, "training_params.json"), "w") as f:
         json.dump(params, f, indent=4)
 
-    # Transformer-friendly optimizer
+    # Stable default optimizer for the attention-based planner
     optimizer = optim.AdamW(model.parameters(), lr=learningRate, weight_decay=0.01, betas=(0.9, 0.95), eps=1e-8)
 
     if resumeModelPath:
@@ -929,7 +929,7 @@ def trainModel(
     trainSubsetSize = getTrainSubsetSize()
     batchesPerEpoch = math.ceil(trainSubsetSize / batchSize)
     totalSteps = math.ceil((batchesPerEpoch * numEpochs) / max(1, gradAccumSteps))
-    warmupSteps = min(2000, max(50, int(0.05 * totalSteps)))  # Longer warmup for transformer
+    warmupSteps = min(2000, max(50, int(0.05 * totalSteps)))  # Longer warmup helps the planner settle early
 
     def lrLambda(step):
         if step < warmupSteps:
@@ -1227,12 +1227,12 @@ if __name__ == "__main__":
     valSamplesPerEpoch = trainSamplesPerEpoch * 2                          # Fixed val samples per epoch (2x trainSamplesPerEpoch)
     seed = 42                       # Base seed for reproducibility
     splitSeed = 42                  # Train/val split seed (keep fixed to avoid contamination)
-    learningRate = 5e-5             # Optimized for transformer stability
+    learningRate = 5e-5             # Conservative default for stable planner training
     featDim = 384                   # Feature dimension in the model
     hiddenDim = 768                 # Hidden dimension in the model
     baseChannels = 48               # Backbone width (increases compute per frame)
-    numHeads = 8                    # Transformer attention heads
-    numLayers = 4                   # Transformer depth
+    numHeads = 8                    # Cross-attention heads
+    numLayers = 4                   # Recurrent planner depth
     useAuxDyn = False               # Whether to enable auxiliary dynamics head (speed/accel prediction)
     resumeModelPath = None#r"D:\VS_Python_Project\Autopilot\Autopilot\training\run21\last_model.pth"  # Set to path like "training/run13/best_model.pth" to resume training
 

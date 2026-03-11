@@ -12,6 +12,7 @@ import glob
 import pandas as pd
 from scipy.spatial.transform import Rotation as R_scipy
 import warnings
+from collections import deque
 
 from model.CreateModel import TrajectoryModel
 from dataset.generator import (
@@ -36,6 +37,87 @@ scaleFactor = 1.0
 
 
 global DOWNSCALE, SHOWATTENTION, SHOWORIGINALTRAJ, USEGPU, DEBUG, USEGROUNDTRUTH, REALTIME
+
+
+def normalizeVectorTimes(vectorTimes, predSteps, fallbackInterval=0.25):
+    if vectorTimes is None:
+        return [float(fallbackInterval) * (i + 1) for i in range(int(predSteps))]
+
+    if isinstance(vectorTimes, torch.Tensor):
+        values = vectorTimes.detach().cpu().flatten().tolist()
+    elif isinstance(vectorTimes, np.ndarray):
+        values = vectorTimes.flatten().tolist()
+    else:
+        values = list(vectorTimes)
+
+    normalized = []
+    for value in values:
+        try:
+            normalized.append(float(value))
+        except (TypeError, ValueError):
+            continue
+
+    if not normalized:
+        return [float(fallbackInterval) * (i + 1) for i in range(int(predSteps))]
+
+    normalized = sorted(normalized)
+    targetLen = int(predSteps)
+    if len(normalized) < targetLen:
+        step = normalized[-1] - normalized[-2] if len(normalized) > 1 else float(fallbackInterval)
+        step = max(step, 1e-3)
+        while len(normalized) < targetLen:
+            normalized.append(normalized[-1] + step)
+    elif len(normalized) > targetLen:
+        normalized = normalized[:targetLen]
+
+    return normalized
+
+
+def buildSegmentDurations(vectorTimes, segmentCount, fallbackTotalSeconds=3.0):
+    if segmentCount <= 0:
+        return []
+
+    if vectorTimes is None or len(vectorTimes) < segmentCount:
+        defaultDt = fallbackTotalSeconds / segmentCount
+        return [defaultDt for _ in range(segmentCount)]
+
+    durations = []
+    previous = 0.0
+    for idx in range(segmentCount):
+        current = float(vectorTimes[idx])
+        durations.append(max(1e-3, current - previous))
+        previous = current
+    return durations
+
+
+def kinematicStatesToDisplacementVectors(prediction, vectorTimes):
+    """
+    Convert kinematic states [speed(m/s), yaw_rate(rad/s)] into per-step
+    local displacement vectors [right, forward] in meters.
+    """
+    if prediction is None:
+        return None
+
+    if not isinstance(prediction, torch.Tensor):
+        prediction = torch.as_tensor(prediction, dtype=torch.float32)
+
+    if prediction.dim() == 2:
+        prediction = prediction.unsqueeze(0)
+    if prediction.dim() != 3 or prediction.size(-1) != 2:
+        return prediction
+
+    batchSize, predSteps, _ = prediction.shape
+    stepDurations = buildSegmentDurations(vectorTimes, predSteps, fallbackTotalSeconds=3.0)
+    dt = prediction.new_tensor(stepDurations).view(1, predSteps).expand(batchSize, predSteps)
+
+    speed = prediction[:, :, 0]
+    yawRate = prediction[:, :, 1]
+
+    yaw = torch.cumsum(yawRate * dt, dim=1)
+    right = speed * torch.sin(yaw) * dt
+    forward = speed * torch.cos(yaw) * dt
+
+    return torch.stack([right, forward], dim=-1)
 
 
 def safeTimestampFromUs(timestampUs):
@@ -197,16 +279,19 @@ def drawProjectedPolyline(overlay, projectedPoints, color, thickness):
         cv2.polylines(overlay, [pts], isClosed=False, color=color, thickness=thickness, lineType=cv2.LINE_AA)
 
 
-def drawProjectedRibbonFromRig(overlay, rigPoints, intrinsics, extrinsics, downscale, widthMeters, color):
+def drawProjectedRibbonFromRig(overlay, rigPoints, intrinsics, extrinsics, downscale, widthMeters, color, vectorTimes=None):
     if rigPoints is None or intrinsics is None or extrinsics is None:
         return
     if len(rigPoints) < 2:
         return
 
-    # Calculate speeds in km/h for each segment
     numSegments = len(rigPoints) - 1
-    timeIncrement = 3.0 / numSegments if numSegments > 0 else 0
-    speeds = [np.linalg.norm(rigPoints[i+1][:2] - rigPoints[i][:2]) / timeIncrement * 3.6 if timeIncrement > 0 else 0 for i in range(numSegments)]
+    segmentDurations = buildSegmentDurations(vectorTimes, numSegments, fallbackTotalSeconds=3.0)
+    speeds = [
+        np.linalg.norm(rigPoints[i + 1][:2] - rigPoints[i][:2]) / segmentDurations[i] * 3.6
+        if segmentDurations[i] > 0 else 0
+        for i in range(numSegments)
+    ]
 
     count = len(rigPoints)
     dirs = [None] * (count - 1)
@@ -392,7 +477,7 @@ def drawTopDownCanvas(vectors, color, thickness):
     return canvas
 
 
-def drawTopDownRibbon(vectors, color, widthPx, carLength=None):
+def drawTopDownRibbon(vectors, color, widthPx, carLength=None, vectorTimes=None):
     canvas = np.zeros((trajectoryCanvasHeight, trajectoryCanvasWidth, 4), dtype=np.uint8)
     offset = int(carLength * vecToPixel) if carLength else 0
     originPoint = np.array([trajectoryCanvasWidth // 2, trajectoryCanvasHeight - vectorThickness - offset], dtype=float)
@@ -401,12 +486,12 @@ def drawTopDownRibbon(vectors, color, widthPx, carLength=None):
         return canvas
 
     vectorsNp = vectors.cpu().numpy() if isinstance(vectors, torch.Tensor) else np.asarray(vectors, dtype=float)
-    timeIncrement = 3.0 / len(vectorsNp) if len(vectorsNp) > 0 else 0
+    segmentDurations = buildSegmentDurations(vectorTimes, len(vectorsNp), fallbackTotalSeconds=3.0)
     currentPoint = originPoint
     halfWidth = max(1.0, widthPx / 2.0)
     joints = []
 
-    for vec in vectorsNp:
+    for idx, vec in enumerate(vectorsNp):
         dx = float(vec[0]) * vecToPixel
         dy = -float(vec[1]) * vecToPixel
         segment = np.array([dx, dy], dtype=float)
@@ -414,8 +499,8 @@ def drawTopDownRibbon(vectors, color, widthPx, carLength=None):
         if segLen < 1e-6:
             segLen = 1e-6  # Ensure minimum length for drawing
 
-        # Calculate speed in km/h
-        speedKmh = math.sqrt(vec[0]**2 + vec[1]**2) / timeIncrement * 3.6 if timeIncrement > 0 else 0
+        dt = segmentDurations[idx] if idx < len(segmentDurations) else 0.0
+        speedKmh = math.sqrt(vec[0] ** 2 + vec[1] ** 2) / dt * 3.6 if dt > 0 else 0
 
         nextPoint = currentPoint + segment
         normal = np.array([-segment[1], segment[0]], dtype=float) / segLen
@@ -531,6 +616,7 @@ def visualizeFrame(
     carLength,
     rearAxleToCenter,
     viewModeLabel,
+    predictedSpeedMs=None,
     overlayAttention=False,
     overlayMotion=False,
 ):
@@ -548,8 +634,8 @@ def visualizeFrame(
     else:
         predThickness = vectorThickness
 
-    gtCanvas = drawTopDownRibbon(groundTruth, grayColor, gtThickness, carLength)
-    predCanvas = drawTopDownRibbon(predictions, blueColor, predThickness, carLength)
+    gtCanvas = drawTopDownRibbon(groundTruth, grayColor, gtThickness, carLength, vectorTimes)
+    predCanvas = drawTopDownRibbon(predictions, blueColor, predThickness, carLength, vectorTimes)
     canvasCombined = cv2.add(gtCanvas, predCanvas)
 
     gtRigPoints = buildRigPointsFromVectors(groundTruth, scaleFactor)
@@ -581,8 +667,8 @@ def visualizeFrame(
     predProjected = projectRigPoints(predRigPoints, intrinsics, extrinsics, DOWNSCALE) if predRigPoints is not None else None
 
     if carWidth is not None:
-        drawProjectedRibbonFromRig(gtOverlay, gtRigPoints, intrinsics, extrinsics, DOWNSCALE, carWidth, (*grayColor, 178))
-        drawProjectedRibbonFromRig(predOverlay, predRigPoints, intrinsics, extrinsics, DOWNSCALE, carWidth * 1.1, (*blueColor, 100))
+        drawProjectedRibbonFromRig(gtOverlay, gtRigPoints, intrinsics, extrinsics, DOWNSCALE, carWidth, (*grayColor, 178), vectorTimes)
+        drawProjectedRibbonFromRig(predOverlay, predRigPoints, intrinsics, extrinsics, DOWNSCALE, carWidth * 1.1, (*blueColor, 100), vectorTimes)
     else:
         projectedGtThickness = int(vectorThickness * 1.5)
         projectedPredThickness = vectorThickness
@@ -670,11 +756,14 @@ def visualizeFrame(
     putTextWithOutline(scaledFrame, "Ground Truth (gray)", (10, scaledFrame.shape[0] - 30), font, fontScale, grayColor, thickness)
 
     if predictions is not None and len(predictions) > 0:
-        firstVector = predictions[0]
-        firstVectorNp = firstVector.cpu().numpy() if isinstance(firstVector, torch.Tensor) else np.asarray(firstVector)
-        distance = math.sqrt(float(firstVectorNp[0]) ** 2 + float(firstVectorNp[1]) ** 2)
-        stepSeconds = vectorTimes[0] if vectorTimes else interval
-        requestedSpeedMs = distance / max(stepSeconds, 1e-6)
+        if predictedSpeedMs is None:
+            firstVector = predictions[0]
+            firstVectorNp = firstVector.cpu().numpy() if isinstance(firstVector, torch.Tensor) else np.asarray(firstVector)
+            distance = math.sqrt(float(firstVectorNp[0]) ** 2 + float(firstVectorNp[1]) ** 2)
+            stepSeconds = vectorTimes[0] if vectorTimes else interval
+            requestedSpeedMs = distance / max(stepSeconds, 1e-6)
+        else:
+            requestedSpeedMs = float(predictedSpeedMs)
         requestedSpeedKph = requestedSpeedMs * 3.6
         speedText = f"Predicted target speed: {requestedSpeedMs:.1f} m/s ({requestedSpeedKph:.1f} km/h)"
         putTextWithOutline(scaledFrame, speedText, (speedCoords[0] + 550 // DOWNSCALE, speedCoords[1]), font, fontScale, blueColor, thickness)
@@ -726,10 +815,13 @@ def runModel(modelPath, videoPath, calibrationRoot, temporalContextTimeWindow=0.
             numHeads=numHeads,
             numLayers=numLayers,
             predSteps=predSteps,
+            intervalSeconds=intervalSeconds,
+            vectorTimes=vectorTimes,
         ).to(device).name
-        if modelName != availableModelName:
-            raise ValueError(
-                f"Invalid model architecture. Model with architecture '{modelName}' was being loaded with the architecture '{availableModelName}'."
+        if modelName and modelName != availableModelName:
+            warnings.warn(
+                f"Model name mismatch: checkpoint declares '{modelName}', local code reports '{availableModelName}'. "
+                "Proceeding with local architecture and loading compatible keys."
             )
 
         print(
@@ -754,13 +846,27 @@ def runModel(modelPath, videoPath, calibrationRoot, temporalContextTimeWindow=0.
         intervalSeconds=intervalSeconds,
         vectorTimes=vectorTimes,
     ).to(device)
-    model.load_state_dict(torch.load(modelPath, map_location=device))
+    stateDict = torch.load(modelPath, map_location=device)
+    loadResult = model.load_state_dict(stateDict, strict=False)
+    if loadResult.missing_keys:
+        warnings.warn(f"Missing checkpoint keys: {loadResult.missing_keys[:8]}{' ...' if len(loadResult.missing_keys) > 8 else ''}")
+    if loadResult.unexpected_keys:
+        warnings.warn(f"Unexpected checkpoint keys: {loadResult.unexpected_keys[:8]}{' ...' if len(loadResult.unexpected_keys) > 8 else ''}")
     model.eval()
+
+    modelRuntimeName = getattr(model, "name", "")
+    outputsKinematicStates = (
+        (isinstance(modelName, str) and "kinematic" in modelName.lower())
+        or (isinstance(modelRuntimeName, str) and "kinematic" in modelRuntimeName.lower())
+    )
 
     predSteps = model.outputSpec.get('num_vectors', 12) if hasattr(model, 'outputSpec') else 12
     interval = model.outputSpec.get('intervalSeconds', intervalSeconds) if hasattr(model, 'outputSpec') else intervalSeconds
-    if vectorTimes is None:
-        vectorTimes = model.vectorTimes
+    vectorTimes = normalizeVectorTimes(
+        vectorTimes if vectorTimes is not None else getattr(model, "vectorTimes", None),
+        predSteps,
+        fallbackInterval=interval,
+    )
     inputImageSize = model.inputSpec.get('image_size', (270, 480)) if hasattr(model, 'inputSpec') else (270, 480)
 
     print(f"\nModel specs - Input Size: {inputImageSize} -> Output PredSteps: {predSteps}, Interval: {interval}s\n")
@@ -868,6 +974,9 @@ def runModel(modelPath, videoPath, calibrationRoot, temporalContextTimeWindow=0.
     lastMotionMap = None
     viewMode = 0
     attnIndex = -1
+    egoHistoryBuffer = deque(maxlen=8)
+    startupEgoHistoryLength = 8
+    requireEgoWarmup = outputsKinematicStates and usegroundtruth
 
     print()
     with torch.no_grad():
@@ -933,7 +1042,10 @@ def runModel(modelPath, videoPath, calibrationRoot, temporalContextTimeWindow=0.
                     acceleration = math.sqrt(ax * ax + ay * ay)
 
                     curvature = float(currentEgoState['curvature'])
+                    yawRateRad = curvature * speed
                     turnRate = math.degrees(curvature * speed)
+
+                    egoHistoryBuffer.append(np.array([speed, acceleration, yawRateRad], dtype=np.float32))
 
                     currentTelemetry = {
                         'timestamp': safeTimestampFromUs(currentFrameTimestampUs),
@@ -943,8 +1055,12 @@ def runModel(modelPath, videoPath, calibrationRoot, temporalContextTimeWindow=0.
                     }
 
                 frameBuffer.append(frame)
+                while len(frameBuffer) > frameBufferSize:
+                    frameBuffer.pop(0)
 
                 prediction = None
+                predictionVectors = None
+                predictedSpeedTextValueMs = None
                 labels = None
                 attnMaps = None
 
@@ -952,18 +1068,43 @@ def runModel(modelPath, videoPath, calibrationRoot, temporalContextTimeWindow=0.
                 trajTimeMs = 0.0
                 vizTimeMs = 0.0
 
-                if len(frameBuffer) >= frameBufferSize:
+                egoWarmupReady = (not requireEgoWarmup) or (len(egoHistoryBuffer) >= startupEgoHistoryLength)
+                modelInputReady = len(frameBuffer) == frameBufferSize and egoWarmupReady
+
+                if modelInputReady:
                     currentFrameOrig = frameBuffer[-1]
                     prevFrameOrig = frameBuffer[0]
-                    frameBuffer.pop(0)
 
                     prevImage = Image.fromarray(cv2.cvtColor(prevFrameOrig, cv2.COLOR_BGR2RGB))
                     currentImage = Image.fromarray(cv2.cvtColor(currentFrameOrig, cv2.COLOR_BGR2RGB))
                     prevImgTensor = transform(prevImage).unsqueeze(0).to(device)
                     currentImgTensor = transform(currentImage).unsqueeze(0).to(device)
 
+                    if egoHistoryBuffer:
+                        historyValues = list(egoHistoryBuffer)
+                        if len(historyValues) < 8:
+                            padValue = historyValues[0]
+                            historyValues = [padValue.copy() for _ in range(8 - len(historyValues))] + historyValues
+                        else:
+                            historyValues = historyValues[-8:]
+                        egoHistoryInput = torch.tensor(np.stack(historyValues), dtype=currentImgTensor.dtype, device=device).unsqueeze(0)
+                    else:
+                        egoHistoryInput = torch.zeros((1, 8, 3), dtype=currentImgTensor.dtype, device=device)
+
                     modelStart = time.perf_counter()
-                    prediction, _, attnMaps, motionMap = model(currentImgTensor, prevImgTensor, returnMotionMap=True)
+                    prediction, _, attnMaps, motionMap = model(
+                        currentImgTensor,
+                        prevImgTensor,
+                        egoHistory=egoHistoryInput,
+                        returnMotionMap=True,
+                    )
+                    predictionVectors = (
+                        kinematicStatesToDisplacementVectors(prediction, vectorTimes)
+                        if outputsKinematicStates
+                        else prediction
+                    )
+                    if outputsKinematicStates and prediction is not None and prediction.numel() > 0:
+                        predictedSpeedTextValueMs = float(prediction[0, 0, 0].detach().cpu().item())
                     modelTimeMs = (time.perf_counter() - modelStart) * 1000.0
                     if attnMaps:
                         if attnIndex == -1:
@@ -977,7 +1118,7 @@ def runModel(modelPath, videoPath, calibrationRoot, temporalContextTimeWindow=0.
                     else:
                         lastMotionMap = None
 
-                if currentFrameTimestampUs is not None and currentEgoState is not None:
+                if currentFrameTimestampUs is not None and currentEgoState is not None and modelInputReady:
                     trajStart = time.perf_counter()
                     if vectorTimes:
                         targetTimesUs = [currentFrameTimestampUs + int(offset * 1e6) for offset in vectorTimes]
@@ -992,52 +1133,61 @@ def runModel(modelPath, videoPath, calibrationRoot, temporalContextTimeWindow=0.
                         labels = torch.tensor(labelsList[:predSteps], dtype=torch.float32)
                     trajTimeMs = (time.perf_counter() - trajStart) * 1000.0
 
-                displayFrame = frame
-                if viewMode != 0:
-                    modelViewSmall = cv2.resize(frame, (inputImageSize[1], inputImageSize[0]))
-                    displayFrame = cv2.resize(modelViewSmall, (frame.shape[1], frame.shape[0]))
+                if modelInputReady:
+                    displayFrame = frame
+                    if viewMode != 0:
+                        modelViewSmall = cv2.resize(frame, (inputImageSize[1], inputImageSize[0]))
+                        displayFrame = cv2.resize(modelViewSmall, (frame.shape[1], frame.shape[0]))
 
-                vizStart = time.perf_counter()
-                overlayAttention = (viewMode == 2)
-                overlayMotion = (viewMode == 3)
-                viewModeLabel = (
-                    "Original View"
-                    if viewMode == 0
-                    else "Model View"
-                    if viewMode == 1
-                    else f"Internal Model View{' (All)' if attnIndex == -1 else f' (Step {attnIndex+1})'}"
-                    if viewMode == 2
-                    else "Motion Encoder View"
-                )
-                visualizeFrame(
-                    displayFrame,
-                    prediction.squeeze() if prediction is not None else None,
-                    labels,
-                    lastAttnMap,
-                    lastMotionMap,
-                    currentTelemetry,
-                    interval,
-                    vectorTimes,
-                    intrinsics,
-                    extrinsics,
-                    carWidth,
-                    trackWidth,
-                    carLength,
-                    rearAxleToCenter,
-                    viewModeLabel,
-                    overlayAttention,
-                    overlayMotion,
-                )
-                vizTimeMs = (time.perf_counter() - vizStart) * 1000.0
+                    vizStart = time.perf_counter()
+                    overlayAttention = (viewMode == 2)
+                    overlayMotion = (viewMode == 3)
+                    viewModeLabel = (
+                        "Original View"
+                        if viewMode == 0
+                        else "Model View"
+                        if viewMode == 1
+                        else f"Internal Model View{' (All)' if attnIndex == -1 else f' (Step {attnIndex+1})'}"
+                        if viewMode == 2
+                        else "Motion Encoder View"
+                    )
+                    visualizeFrame(
+                        displayFrame,
+                        predictionVectors.squeeze() if predictionVectors is not None else None,
+                        labels,
+                        lastAttnMap,
+                        lastMotionMap,
+                        currentTelemetry,
+                        interval,
+                        vectorTimes,
+                        intrinsics,
+                        extrinsics,
+                        carWidth,
+                        trackWidth,
+                        carLength,
+                        rearAxleToCenter,
+                        viewModeLabel,
+                        predictedSpeedTextValueMs,
+                        overlayAttention,
+                        overlayMotion,
+                    )
+                    vizTimeMs = (time.perf_counter() - vizStart) * 1000.0
 
                 totalMs = (time.perf_counter() - loopStart) * 1000.0
                 otherMs = max(0.0, totalMs - modelTimeMs - trajTimeMs - vizTimeMs)
                 fpsText = 1000.0 / totalMs if totalMs > 1e-6 else 0.0
-                print(
-                    f"\rmodel:{modelTimeMs:5.1f}ms - traj:{trajTimeMs:5.1f}ms - viz:{vizTimeMs:5.1f}ms - other:{otherMs:5.1f}ms | total:{totalMs:6.1f}ms - fps:{fpsText:5.1f}",
-                    end="",
-                    flush=True,
-                )
+                if modelInputReady:
+                    print(
+                        f"\rmodel:{modelTimeMs:5.1f}ms - traj:{trajTimeMs:5.1f}ms - viz:{vizTimeMs:5.1f}ms - other:{otherMs:5.1f}ms | total:{totalMs:6.1f}ms - fps:{fpsText:5.1f}",
+                        end="",
+                        flush=True,
+                    )
+                elif requireEgoWarmup:
+                    print(
+                        f"\rWarming up ego history {len(egoHistoryBuffer)}/{startupEgoHistoryLength}...",
+                        end="",
+                        flush=True,
+                    )
 
                 if REALTIME and realStartWallTime is not None:
                     try:
@@ -1075,11 +1225,11 @@ if __name__ == '__main__':
     USEGROUNDTRUTH = True
     REALTIME = False
 
-    modelPath = r"D:\VS_Python_Project\Autopilot\Autopilot\training\run21\last_model.pth"
-    videoPath = r"D:\VS_Python_Project\Autopilot\Autopilot\Test_drive\2025\2025.06.24"
-    # videoPath = r"F:\Projects\Autopilot\nvidia_dataset\camera\camera_front_wide_120fov"
+    modelPath = r"C:\Users\Aypisam\Documents\VS_Python_Project\Autopilot\training\run22\best_model.pth"
+    videoPath = r"C:\Users\Aypisam\Documents\VS_Python_Project\Autopilot\test_drive\2026\2026.03.05\GP016080_short.MP4"
+    videoPath = r"C:\Users\Aypisam\Videos\Autopilot_Videos\Camera\camera_front_wide_120fov"
 
-    calibrationRoot = r"F:\Projects\Autopilot\nvidia_dataset\calibration"
+    calibrationRoot = r"C:\Users\Aypisam\Videos\Autopilot_Videos\calibration"
 
     # if video path is a list, run on each video
     if isinstance(videoPath, list):

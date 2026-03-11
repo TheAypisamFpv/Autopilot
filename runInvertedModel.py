@@ -3,6 +3,7 @@ import json
 import time
 import math
 import warnings
+from collections import deque
 from datetime import datetime, timedelta
 
 import cv2
@@ -15,6 +16,8 @@ import runModel as runModelModule
 from runModel import (
     resolveNvidiaEgomotionPaths,
     loadCalibrationData,
+    normalizeVectorTimes,
+    kinematicStatesToDisplacementVectors,
     safeTimestampFromUs,
     visualizeFrame,
 )
@@ -53,6 +56,9 @@ def invertFrameFromTrajectory(
     model,
     targetTraj,
     prevSynthTensor,
+    egoHistoryInput,
+    outputsKinematicStates,
+    vectorTimes,
     device,
     inputImageSize,
     steps,
@@ -80,8 +86,11 @@ def invertFrameFromTrajectory(
 
     for _ in range(steps):
         optimizer.zero_grad(set_to_none=True)
-        preds, _, _ = model(currentTensor, prevSynthTensor)
-        loss = lossFn(preds.squeeze(0), targetTraj)
+        preds, _, _ = model(currentTensor, prevSynthTensor, egoHistory=egoHistoryInput)
+        predictionForLoss = preds
+        if outputsKinematicStates:
+            predictionForLoss = kinematicStatesToDisplacementVectors(preds, vectorTimes)
+        loss = lossFn(predictionForLoss.squeeze(0), targetTraj)
 
         if l2Weight > 0.0:
             loss = loss + l2Weight * torch.mean(currentTensor ** 2)
@@ -97,7 +106,7 @@ def invertFrameFromTrajectory(
             currentTensor.clamp_(-3.0, 3.0)
 
     with torch.no_grad():
-        preds, _, attnMaps = model(currentTensor, prevSynthTensor)
+        preds, _, attnMaps = model(currentTensor, prevSynthTensor, egoHistory=egoHistoryInput)
 
     lastAttnMap = None
     if attnMaps:
@@ -135,10 +144,20 @@ def runInvertedModel(
         vectorTimes = trainingParams.get('vectorTimes', None)
 
         modelName = trainingParams.get('modelName', 'unknown_model')
-        availableModelName = TrajectoryModel(featDim=featDim, hiddenDim=hiddenDim, predSteps=predSteps).to(device).name
-        if modelName != availableModelName:
-            raise ValueError(
-                f"Invalid model architecture. Model with architecture '{modelName}' was being loaded with the architecture '{availableModelName}'."
+        availableModelName = TrajectoryModel(
+            featDim=featDim,
+            hiddenDim=hiddenDim,
+            predSteps=predSteps,
+            intervalSeconds=intervalSeconds,
+            vectorTimes=vectorTimes,
+            baseChannels=baseChannels,
+            numHeads=numHeads,
+            numLayers=numLayers,
+        ).to(device).name
+        if modelName and modelName != availableModelName:
+            warnings.warn(
+                f"Model name mismatch: checkpoint declares '{modelName}', local code reports '{availableModelName}'. "
+                "Proceeding with local architecture and loading compatible keys."
             )
 
         print(
@@ -161,13 +180,27 @@ def runInvertedModel(
         numHeads=numHeads,
         numLayers=numLayers,
     ).to(device)
-    model.load_state_dict(torch.load(modelPath, map_location=device))
+    stateDict = torch.load(modelPath, map_location=device)
+    loadResult = model.load_state_dict(stateDict, strict=False)
+    if loadResult.missing_keys:
+        warnings.warn(f"Missing checkpoint keys: {loadResult.missing_keys[:8]}{' ...' if len(loadResult.missing_keys) > 8 else ''}")
+    if loadResult.unexpected_keys:
+        warnings.warn(f"Unexpected checkpoint keys: {loadResult.unexpected_keys[:8]}{' ...' if len(loadResult.unexpected_keys) > 8 else ''}")
     model.eval()
+
+    modelRuntimeName = getattr(model, "name", "")
+    outputsKinematicStates = (
+        (isinstance(modelName, str) and "kinematic" in modelName.lower())
+        or (isinstance(modelRuntimeName, str) and "kinematic" in modelRuntimeName.lower())
+    )
 
     predSteps = model.outputSpec.get('num_vectors', 12) if hasattr(model, 'outputSpec') else 12
     interval = model.outputSpec.get('intervalSeconds', intervalSeconds) if hasattr(model, 'outputSpec') else intervalSeconds
-    if vectorTimes is None:
-        vectorTimes = model.vectorTimes
+    vectorTimes = normalizeVectorTimes(
+        vectorTimes if vectorTimes is not None else getattr(model, "vectorTimes", None),
+        predSteps,
+        fallbackInterval=interval,
+    )
     inputImageSize = model.inputSpec.get('image_size', (270, 480)) if hasattr(model, 'inputSpec') else (270, 480)
 
     print(f"\nModel specs - Input Size: {inputImageSize} -> Output PredSteps: {predSteps}, Interval: {interval}s\n")
@@ -250,6 +283,9 @@ def runInvertedModel(
 
     lastSynthTensor = None
     viewMode = 0
+    egoHistoryBuffer = deque(maxlen=8)
+    startupEgoHistoryLength = 8
+    requireEgoWarmup = outputsKinematicStates and usegroundtruth
     
 
     print()
@@ -284,7 +320,10 @@ def runInvertedModel(
                 acceleration = math.sqrt(ax * ax + ay * ay)
 
                 curvature = float(currentEgoState['curvature'])
+                yawRateRad = curvature * speed
                 turnRate = math.degrees(curvature * speed)
+
+                egoHistoryBuffer.append(np.array([speed, acceleration, yawRateRad], dtype=np.float32))
 
                 currentTelemetry = {
                     'timestamp': safeTimestampFromUs(currentFrameTimestampUs),
@@ -294,6 +333,8 @@ def runInvertedModel(
                 }
 
             frameBuffer.append(frame)
+
+            egoWarmupReady = (not requireEgoWarmup) or (len(egoHistoryBuffer) >= startupEgoHistoryLength)
 
             labels = None
             if currentFrameTimestampUs is not None and currentEgoState is not None:
@@ -316,7 +357,7 @@ def runInvertedModel(
             modelTimeMs = 0.0
             vizTimeMs = 0.0
 
-            if len(frameBuffer) >= frameBufferSize:
+            if len(frameBuffer) >= frameBufferSize and egoWarmupReady:
                 prevFrameOrig = frameBuffer[0]
                 currentFrameOrig = frameBuffer[-1]
                 frameBuffer.pop(0)
@@ -349,6 +390,17 @@ def runInvertedModel(
                 if prevInputTensor is None and prevInitTensor is not None:
                     prevInputTensor = prevInitTensor
 
+                if egoHistoryBuffer:
+                    historyValues = list(egoHistoryBuffer)
+                    if len(historyValues) < 8:
+                        padValue = historyValues[0]
+                        historyValues = [padValue.copy() for _ in range(8 - len(historyValues))] + historyValues
+                    else:
+                        historyValues = historyValues[-8:]
+                    egoHistoryInput = torch.tensor(np.stack(historyValues), dtype=prevInputTensor.dtype if prevInputTensor is not None else torch.float32, device=device).unsqueeze(0)
+                else:
+                    egoHistoryInput = torch.zeros((1, 8, 3), dtype=prevInputTensor.dtype if prevInputTensor is not None else torch.float32, device=device)
+
                 if labels is not None:
                     print("\nInverting frame from trajectory...", end="", flush=True)
                     modelStart = time.perf_counter()
@@ -356,6 +408,9 @@ def runInvertedModel(
                         model,
                         labels,
                         prevInputTensor,
+                        egoHistoryInput,
+                        outputsKinematicStates,
+                        vectorTimes,
                         device,
                         inputImageSize,
                         inversionSteps,
@@ -395,9 +450,17 @@ def runInvertedModel(
                 vizStart = time.perf_counter()
                 overlayAttention = (viewMode == 2)
                 viewModeLabel = "Original View" if viewMode == 0 else "Model View" if viewMode == 1 else "Internal Model View"
+                synthPredictionVectors = (
+                    kinematicStatesToDisplacementVectors(synthPrediction, vectorTimes)
+                    if outputsKinematicStates
+                    else synthPrediction
+                )
+                predictedSpeedTextValueMs = None
+                if outputsKinematicStates and synthPrediction is not None and synthPrediction.numel() > 0:
+                    predictedSpeedTextValueMs = float(synthPrediction[0, 0, 0].detach().cpu().item())
                 visualizeFrame(
                     synthFrame,
-                    synthPrediction.squeeze(0),
+                    synthPredictionVectors.squeeze(0),
                     labels.detach().cpu() if labels is not None else None,
                     synthAttnMap,
                     None,
@@ -411,17 +474,25 @@ def runInvertedModel(
                     carLength,
                     rearAxleToCenter,
                     viewModeLabel,
-                    overlayAttention,
+                    predictedSpeedMs=predictedSpeedTextValueMs,
+                    overlayAttention=overlayAttention,
                 )
                 vizTimeMs = (time.perf_counter() - vizStart) * 1000.0
 
             totalMs = (time.perf_counter() - loopStart) * 1000.0
             fpsText = 1000.0 / totalMs if totalMs > 1e-6 else 0.0
-            print(
-                f"\rmodel:{modelTimeMs:5.1f}ms - viz:{vizTimeMs:5.1f}ms | total:{totalMs:6.1f}ms - fps:{fpsText:5.1f}",
-                end="",
-                flush=True,
-            )
+            if len(frameBuffer) >= frameBufferSize and egoWarmupReady:
+                print(
+                    f"\rmodel:{modelTimeMs:5.1f}ms - viz:{vizTimeMs:5.1f}ms | total:{totalMs:6.1f}ms - fps:{fpsText:5.1f}",
+                    end="",
+                    flush=True,
+                )
+            elif requireEgoWarmup:
+                print(
+                    f"\rWarming up ego history {len(egoHistoryBuffer)}/{startupEgoHistoryLength}...",
+                    end="",
+                    flush=True,
+                )
 
             nextFrameTime += timePerFrame
 

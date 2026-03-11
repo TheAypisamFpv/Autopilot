@@ -193,7 +193,7 @@ class MotionFpnEncoder(nn.Module):
 
 
 # -------------------------
-# Decoder: lightweight transformer over spatial memory
+# Decoder: stepwise cross-attention over spatial memory
 # -------------------------
 class EgoStateEncoder(nn.Module):
     def __init__(self, inputDim: int = 3, hiddenDim: int = 256):
@@ -208,20 +208,56 @@ class EgoStateEncoder(nn.Module):
         return hidden[-1]
 
 
-class RecurrentDeltaKinematicDecoder(nn.Module):
+class ScalarTimeEmbedding(nn.Module):
+    def __init__(self, hiddenDim: int):
+        super().__init__()
+        midDim = max(64, hiddenDim // 2)
+        self.net = nn.Sequential(
+            nn.Linear(2, midDim),
+            nn.SiLU(inplace=True),
+            nn.Linear(midDim, hiddenDim),
+        )
+
+    def forward(self, timePairs: torch.Tensor) -> torch.Tensor:
+        return self.net(timePairs)
+
+
+class CrossAttentionDeltaKinematicDecoder(nn.Module):
+    """
+    Stepwise kinematic decoder that repeatedly attends back to the spatial
+    feature map instead of planning from a single pooled visual summary.
+
+    At each future step, the decoder forms a query from the recurrent state,
+    ego-state context, previous predicted kinematics, and time embedding. That
+    query cross-attends over the image memory, then updates a recurrent state
+    used to predict the next delta in signed speed and yaw rate.
+    """
     def __init__(self, featDim=386, hiddenDim=640, predSteps=12, numHeads=8, numLayers=3):
         super().__init__()
         self.predSteps = predSteps
         self.hiddenDim = hiddenDim
+        self.numLayers = max(1, numLayers)
         self.memoryProj = nn.Conv2d(featDim, hiddenDim, 1, bias=False)
-        self.gru = nn.GRU(
-            input_size=hiddenDim + 256 + 2,
-            hidden_size=hiddenDim,
-            num_layers=2,
-            batch_first=True,
+        self.memoryNorm = nn.LayerNorm(hiddenDim)
+        self.egoProj = nn.Linear(256, hiddenDim)
+        self.stateProj = nn.Linear(2, hiddenDim)
+        self.timeEmbedding = ScalarTimeEmbedding(hiddenDim)
+        self.queryProj = nn.Linear(hiddenDim * 4, hiddenDim)
+        self.crossAttention = nn.MultiheadAttention(
+            embed_dim=hiddenDim,
+            num_heads=max(1, numHeads),
             dropout=0.1,
+            batch_first=True,
         )
-        self.queryProj = nn.Linear(hiddenDim, hiddenDim)
+        self.attnContextProj = nn.Linear(hiddenDim * 2, hiddenDim)
+        self.gru = nn.GRU(
+            input_size=hiddenDim + hiddenDim + 256 + 2,
+            hidden_size=hiddenDim,
+            num_layers=self.numLayers,
+            batch_first=True,
+            dropout=0.1 if self.numLayers > 1 else 0.0,
+        )
+        self.initStateProj = nn.Linear(hiddenDim + 256, hiddenDim)
         self.deltaHead = nn.Sequential(
             nn.Linear(hiddenDim, hiddenDim // 2),
             nn.SiLU(inplace=True),
@@ -233,42 +269,100 @@ class RecurrentDeltaKinematicDecoder(nn.Module):
             persistent=False,
         )
 
+    def _resolveVectorTimes(self, batchSize, device, dtype, vectorTimes):
+        defaultTimes = self.vectorTimes.to(device=device, dtype=dtype)
+        if vectorTimes is None:
+            return defaultTimes.unsqueeze(0).expand(batchSize, -1)
+        if vectorTimes.dim() == 1:
+            vectorTimes = vectorTimes.unsqueeze(0).expand(batchSize, -1)
+        if vectorTimes.size(1) != self.predSteps:
+            return defaultTimes.unsqueeze(0).expand(batchSize, -1)
+        return vectorTimes.to(device=device, dtype=dtype)
+
+    def _buildTimeFeatures(self, effectiveTimes: torch.Tensor) -> torch.Tensor:
+        deltaTimes = effectiveTimes.clone()
+        if effectiveTimes.size(1) > 1:
+            deltaTimes[:, 1:] = effectiveTimes[:, 1:] - effectiveTimes[:, :-1]
+        deltaTimes = torch.clamp(deltaTimes, min=1e-3)
+        return torch.stack([effectiveTimes, deltaTimes], dim=-1)
+
     def forward(self, featMap, egoContext, vectorTimes=None, teacherForcing=True, tfRatio=0.9, gtTraj=None):
-        batchSize = featMap.shape[0]
+        batchSize, _, height, width = featMap.shape
         memory = self.memoryProj(featMap).flatten(2).permute(0, 2, 1)
-        visualContext = memory.mean(dim=1)
+        memory = self.memoryNorm(memory)
+        pooledMemory = memory.mean(dim=1)
 
         if egoContext is None:
             egoContext = torch.zeros(batchSize, 256, device=featMap.device, dtype=featMap.dtype)
 
+        effectiveTimes = self._resolveVectorTimes(batchSize, featMap.device, featMap.dtype, vectorTimes)
+        timeFeatures = self._buildTimeFeatures(effectiveTimes)
+
+        initState = torch.tanh(self.initStateProj(torch.cat([pooledMemory, egoContext], dim=1)))
+        hiddenState = initState.unsqueeze(0).repeat(self.numLayers, 1, 1).contiguous()
         currentState = torch.zeros(batchSize, 2, device=featMap.device, dtype=featMap.dtype)
         predictions = []
-        hiddenState = None
+        attnMaps = []
 
         for stepIndex in range(self.predSteps):
             useTeacherForcing = False
             if teacherForcing and gtTraj is not None:
                 useTeacherForcing = bool(torch.rand(1, device=featMap.device).item() < tfRatio)
 
-            if useTeacherForcing:
-                previousState = gtTraj[:, stepIndex, :]
-            else:
-                previousState = currentState
+            previousState = gtTraj[:, stepIndex, :] if useTeacherForcing else currentState
+            timeEmbed = self.timeEmbedding(timeFeatures[:, stepIndex, :])
+            queryState = hiddenState[-1]
+            queryToken = self.queryProj(
+                torch.cat(
+                    [
+                        queryState,
+                        self.egoProj(egoContext),
+                        self.stateProj(previousState),
+                        timeEmbed,
+                    ],
+                    dim=1,
+                )
+            ).unsqueeze(1)
 
-            stepInput = torch.cat([visualContext, egoContext, previousState], dim=1).unsqueeze(1)
+            attnContext, attnWeights = self.crossAttention(queryToken, memory, memory, need_weights=True)
+            attnContext = self.attnContextProj(torch.cat([attnContext.squeeze(1), queryState], dim=1))
+            stepInput = torch.cat([attnContext, timeEmbed, egoContext, previousState], dim=1).unsqueeze(1)
             gruOut, hiddenState = self.gru(stepInput, hiddenState)
-            deltaState = self.deltaHead(self.queryProj(gruOut.squeeze(1)))
+            deltaState = self.deltaHead(gruOut.squeeze(1))
             currentState = currentState + deltaState
             predictions.append(currentState)
+            attnMaps.append(attnWeights.view(batchSize, 1, height, width))
 
         preds = torch.stack(predictions, dim=1)
-        return preds
+        return preds, attnMaps
 
 
 # -------------------------
 # Full model wrapper
 # -------------------------
 class SmoothKinematicTrajectoryModel(nn.Module):
+    """
+    Motion-aware CNN + cross-attention recurrent planner for smooth future ego motion.
+
+    Predicts signed longitudinal speed (m/s) and yaw rate (rad/s)
+    over non-uniform future time steps, while re-attending to the spatial image
+    memory at every rollout step instead of using one pooled visual summary.
+
+    Inputs (forward):
+        imgT      : (B, 3, 360, 640)   current frame (normalized)
+        imgTm1    : (B, 3, 360, 640)   previous frame (0.1 s earlier)
+        egoHistory: (B, 8, 3)           last 8 states [speed, accel, yaw_rate] (optional)
+        gtTraj    : (B, 12, 2)          ground-truth for teacher forcing (training only)
+
+    Outputs:
+        preds : (B, 12, 2)   [signed_speed_mps, yaw_rate_radps]
+        aux   : None
+        attn  : list of per-step cross-attention maps over the fused image memory
+
+    Attributes:
+        vectorTimes : tensor of the configured future time steps
+        name        : "TrajectoryModel_MotionFpn_CrossAttentionKinematic_V2"
+    """
     def __init__(
         self,
         featDim=384,
@@ -281,19 +375,23 @@ class SmoothKinematicTrajectoryModel(nn.Module):
         baseChannels=48,
         numHeads=8,
         numLayers=3,
+        egoDropoutProb=0.15,
     ):
         super().__init__()
-        self.vectorTimes = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.85, 1.1, 1.35, 1.6, 2.3, 3.0]
+        if vectorTimes is not None and len(vectorTimes) == predSteps:
+            self.vectorTimes = [float(t) for t in vectorTimes]
+        else:
+            self.vectorTimes = buildNonUniformTimeOffsets(predSteps, totalSeconds)
         self.encoder = MotionFpnEncoder(featDim=featDim, baseChannels=baseChannels)
         self.egoEncoder = EgoStateEncoder()
-        self.decoder = RecurrentDeltaKinematicDecoder(
+        self.decoder = CrossAttentionDeltaKinematicDecoder(
             featDim=featDim + 2,
             hiddenDim=hiddenDim,
             predSteps=predSteps,
             numHeads=numHeads,
             numLayers=numLayers,
         )
-        self.name = "SmoothKinematicTrajectoryModelV1"
+        self.name = "TrajectoryModel_MotionFpn_CrossAttentionKinematic_V2"
         self.inputSpec = {
             'image_size': (360, 640),
             'temporal_delay_seconds': 0.1
@@ -304,18 +402,22 @@ class SmoothKinematicTrajectoryModel(nn.Module):
             'totalSeconds': float(self.vectorTimes[-1]),
         }
         self.use_aux_dyn = False
+        self.egoDropoutProb = float(egoDropoutProb)
 
     def forward(self, imgT, imgTm1, gtTraj=None, teacherForcing=True, tfRatio=0.9, egoHistory=None, vectorTimes=None, returnMotionMap=False):
         if egoHistory is None:
             batchSize = imgT.shape[0]
             egoHistory = torch.zeros(batchSize, 8, 3, device=imgT.device, dtype=imgT.dtype)
         egoContext = self.egoEncoder(egoHistory)
+        if self.training and egoContext is not None and self.egoDropoutProb > 0.0:
+            keepMask = (torch.rand(egoContext.size(0), 1, device=egoContext.device) >= self.egoDropoutProb).to(egoContext.dtype)
+            egoContext = egoContext * keepMask
         if returnMotionMap:
             fmap, motionMap = self.encoder(imgT, imgTm1, egoContext=egoContext, returnMotionMap=True)
         else:
             fmap = self.encoder(imgT, imgTm1, egoContext=egoContext)
             motionMap = None
-        preds = self.decoder(
+        preds, attnMaps = self.decoder(
             fmap,
             egoContext,
             vectorTimes=vectorTimes,
@@ -324,7 +426,6 @@ class SmoothKinematicTrajectoryModel(nn.Module):
             gtTraj=gtTraj,
         )
         aux = None
-        attnMaps = None
         if returnMotionMap:
             return preds, aux, attnMaps, motionMap
         return preds, aux, attnMaps
