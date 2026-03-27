@@ -1485,7 +1485,7 @@ def main(
 
 if __name__ == "__main__":
     videoPath = r"F:\Projects\Autopilot\nvidia_dataset"
-    outputDir = r"D:\VS_Python_Project\Autopilot\NVIDIA_Dataset_output"
+    outputDir = r"F:\Projects\Autopilot\dataset_output"
     frameInterval = 0 # interval between each frame sample, in seconds
     imageSize = (640, 360)  # Width, Height
     
@@ -1505,8 +1505,8 @@ if __name__ == "__main__":
     manualStartIndex = 0  # Starting index for dataset items, can be adjusted if resuming from a previous run
 
     debugViz = False
-    numWorkers = 3
-    exportPngs = True
+    numWorkers = 10
+    exportPngs = False
     
     main(
         videoPath,

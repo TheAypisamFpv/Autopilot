@@ -1310,7 +1310,7 @@ if __name__ == "__main__":
     numEpochs = 2_000               # ~1 full pass at 10k samples/epoch for ~9.6M samples
     patience = 100                   # Early stopping patience (stop if no val improvement for this many epochs)
     batchSize = 12                  # Number of samples per training batch (controls GPU memory usage)
-    gradAccumSteps = 1              # Gradient accumulation steps (simulates larger effective batch if >1)
+    gradAccumSteps = 2              # Gradient accumulation steps (simulates larger effective batch if >1)
     trainValSplit = 0.8             # Train/validation split ratio
     trainSamplesPerEpoch = 5_000    # Random samples per epoch for fast iterations
     valSamplesPerEpoch = trainSamplesPerEpoch * 2                          # Fixed val samples per epoch (2x trainSamplesPerEpoch)
@@ -1323,7 +1323,7 @@ if __name__ == "__main__":
     numHeads = 8                    # Cross-attention heads
     numLayers = 4                   # Recurrent planner depth
     useAuxDyn = False               # Whether to enable auxiliary dynamics head (speed/accel prediction)
-    resumeModelPath = None#r"D:\VS_Python_Project\Autopilot\Autopilot\training\run21\last_model.pth"  # Set to path like "training/run13/best_model.pth" to resume training
+    resumeModelPath = r"D:\VS_Python_Project\Autopilot\Autopilot\training\run23\last_model.pth"  # Set to path like "training/run13/best_model.pth" to resume training
 
     trainModel(
         datasetDir=datasetPath,
