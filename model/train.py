@@ -18,6 +18,41 @@ import random
 import multiprocessing
 from collections import deque
 
+
+def computeCleanSubepochSchedule(totalTrainSamples: int, requestedSamplesPerSub: int, minFullEpochs: int = 5):
+    """
+    Compute a clean sub-epoch schedule.
+
+    Attempts to choose numSubEpochs and an adjusted samplesPerSub so that
+    numSubEpochs * samplesPerSub ~= desiredFullEpochs * totalTrainSamples
+    where desiredFullEpochs is at least minFullEpochs. The function returns
+    (actualSamplesPerSub, numSubEpochs, desiredFullEpochs) and prints a
+    short summary of the chosen schedule.
+    """
+    if totalTrainSamples <= 0:
+        return 0, 0, 0
+
+    requested = int(requestedSamplesPerSub) if requestedSamplesPerSub else totalTrainSamples
+    best = None
+    # Search a small range of candidate full-epoch counts starting at min_full_epochs
+    for desired in range(minFullEpochs, minFullEpochs + 21):
+        neededTotal = desired * totalTrainSamples
+        numSubs = max(1, math.ceil(neededTotal / max(1, requested)))
+        adjusted = max(1, int(round(neededTotal / numSubs)))
+        error = abs(adjusted - requested)
+        if best is None or error < best[0] or (error == best[0] and numSubs < best[1]):
+            best = (error, numSubs, adjusted, desired)
+
+    if best is None:
+        return requested, 1, minFullEpochs
+
+    _, numSubEpochs, actualSamplesPerSub, desiredFullEpochs = best
+    print(
+        f"Clean sub-epoch schedule: totalSamples={totalTrainSamples}, requestedPerSub={requested}, "
+        f"actualPerSub={actualSamplesPerSub}, numSubEpochs={numSubEpochs}, desiredFullEpochs={desiredFullEpochs}"
+    )
+    return actualSamplesPerSub, numSubEpochs, desiredFullEpochs
+
 from CreateModel import TrajectoryModel
 from progressBar import getProgressBar
 
@@ -746,66 +781,115 @@ def trainModel(
                 classIndexBuckets[className].append(idx)
                 indexToClass[idx] = className
 
-    def buildStratifiedValIndices():
-        if not balancedData:
-            return []
+    # FIXED: clip-aware train/val split respecting trainValSplit (clip-level grouping)
+    # Group samples by clip key first, then split clips according to trainValSplit.
+    clipGroups = {}
+    for idx, sampleId in enumerate(baseDataset.samples):
+        clipKey, _ = baseDataset._parseSampleId(sampleId)
+        clipGroups.setdefault(clipKey, []).append(idx)
 
-        totalCount = sum(len(v) for v in classIndexBuckets.values())
-        if totalCount == 0:
-            return []
+    clipKeys = list(clipGroups.keys())
+    totalClips = len(clipKeys)
+    # Ensure deterministic shuffling for split reproducibility
+    rng = random.Random(splitSeed if splitSeed is not None else seed)
+    rng.shuffle(clipKeys)
 
-        if trainSamplesPerEpoch is not None:
-            targetValCount = max(1, int(round(trainSamplesPerEpoch * 2)))
-        else:
-            targetValCount = max(1, int(round(totalSamples * (2.0 / 3.0))))
+    if totalClips <= 1:
+        trainClipKeys = clipKeys
+        valClipKeys = []
+    else:
+        numTrainClips = max(1, min(totalClips - 1, int(round(totalClips * float(trainValSplit)))))
 
-        rng = random.Random(seed)
+        # Compute per-class totals (only for samples present in indexToClass)
+        classTotals = {k: 0 for k in classIndexBuckets}
+        for idx, cls in indexToClass.items():
+            if cls in classTotals:
+                classTotals[cls] += 1
+
+        desiredTrainClassCounts = {k: int(round(v * float(trainValSplit))) for k, v in classTotals.items()}
+
+        # Precompute clip-level class counts
+        clipClassCounts = {}
+        for ck, idxs in clipGroups.items():
+            counts = {k: 0 for k in classIndexBuckets}
+            for ii in idxs:
+                cls = indexToClass.get(ii)
+                if cls in counts:
+                    counts[cls] += 1
+            clipClassCounts[ck] = counts
+
+        # Greedy selection of clips to match desired class counts as closely as possible
+        selectedTrainClips = set()
+        currentTrainCounts = {k: 0 for k in classIndexBuckets}
+
+        for _ in range(numTrainClips):
+            bestClip = None
+            bestScore = -1
+            for ck in clipKeys:
+                if ck in selectedTrainClips:
+                    continue
+                counts = clipClassCounts.get(ck, {})
+                # Score = how many of the remaining desired class counts this clip would cover
+                score = 0
+                for cls in counts:
+                    need = max(0, desiredTrainClassCounts.get(cls, 0) - currentTrainCounts.get(cls, 0))
+                    score += min(counts.get(cls, 0), need)
+                # Tie-breaker: random
+                if score > bestScore or (score == bestScore and (bestClip is None or rng.random() < 0.5)):
+                    bestScore = score
+                    bestClip = ck
+
+            if bestClip is None:
+                remaining = [ck for ck in clipKeys if ck not in selectedTrainClips]
+                if not remaining:
+                    break
+                bestClip = rng.choice(remaining)
+
+            selectedTrainClips.add(bestClip)
+            for cls in currentTrainCounts:
+                currentTrainCounts[cls] += clipClassCounts.get(bestClip, {}).get(cls, 0)
+
+        # If we didn't reach the desired number of train clips (rare), fill randomly
+        remainingClips = [ck for ck in clipKeys if ck not in selectedTrainClips]
+        while len(selectedTrainClips) < numTrainClips and remainingClips:
+            pick = rng.choice(remainingClips)
+            selectedTrainClips.add(pick)
+            remainingClips.remove(pick)
+
+        trainClipKeys = [ck for ck in clipKeys if ck in selectedTrainClips]
+        valClipKeys = [ck for ck in clipKeys if ck not in selectedTrainClips]
+
+    # Build train/val index lists from clip partitions
+    trainIndices = []
+    valIndices = []
+    for ck in trainClipKeys:
+        trainIndices.extend(clipGroups.get(ck, []))
+    for ck in valClipKeys:
+        valIndices.extend(clipGroups.get(ck, []))
+
+    # Fallback: ensure we have at least one validation sample
+    if len(valIndices) == 0 and len(trainIndices) > 1:
+        # move one clip from train to val
+        movedClip = trainClipKeys[-1]
+        trainClipKeys = trainClipKeys[:-1]
+        valClipKeys = [movedClip] + valClipKeys
+        trainIndices = []
         valIndices = []
-        remainingSlots = targetValCount
-        remainders = []
+        for ck in trainClipKeys:
+            trainIndices.extend(clipGroups.get(ck, []))
+        for ck in valClipKeys:
+            valIndices.extend(clipGroups.get(ck, []))
 
-        for className, indices in classIndexBuckets.items():
-            proportion = len(indices) / totalCount if totalCount else 0.0
-            exactCount = proportion * targetValCount
-            classTarget = int(math.floor(exactCount))
-            remainders.append((exactCount - classTarget, className))
-            if classTarget > 0:
-                pickCount = min(classTarget, len(indices))
-                valIndices.extend(rng.sample(indices, pickCount))
-                remainingSlots -= pickCount
+    valIndices = sorted(valIndices)
+    trainIndices = sorted(trainIndices)
 
-        remainders.sort(reverse=True)
-        for _, className in remainders:
-            if remainingSlots <= 0:
-                break
-            indices = classIndexBuckets[className]
-            available = [i for i in indices if i not in valIndices]
-            if not available:
-                continue
-            pickCount = min(remainingSlots, len(available))
-            valIndices.extend(rng.sample(available, pickCount))
-            remainingSlots -= pickCount
-
-        if remainingSlots > 0:
-            allIndices = [i for i in range(totalSamples) if i not in valIndices]
-            if allIndices:
-                pickCount = min(remainingSlots, len(allIndices))
-                valIndices.extend(rng.sample(allIndices, pickCount))
-
-        valIndices.sort()
-        return valIndices
-
-    valIndices = buildStratifiedValIndices()
-    if not valIndices:
-        valIndices = []
-        if trainSamplesPerEpoch is not None:
-            targetValCount = max(1, int(round(trainSamplesPerEpoch * 2)))
-        else:
-            targetValCount = max(1, int(round(totalSamples * (2.0 / 3.0))))
-        rng = random.Random(seed)
-        valIndices = rng.sample(range(totalSamples), min(targetValCount, totalSamples))
-    valIndexSet = set(valIndices)
-    trainIndices = [i for i in range(totalSamples) if i not in valIndexSet]
+    # Compute clean sub-epoch schedule and adjust trainSamplesPerEpoch accordingly
+    totalTrainSamples = len(trainIndices)
+    actualTrainSamplesPerSub, numSubEpochs, desiredFullEpochs = computeCleanSubepochSchedule(
+        totalTrainSamples, trainSamplesPerEpoch, minFullEpochs=5
+    )
+    # Update trainSamplesPerEpoch to the adjusted clean value
+    trainSamplesPerEpoch = actualTrainSamplesPerSub
 
     def getTrainSubsetSize():
         if trainSamplesPerEpoch is None:
@@ -838,7 +922,7 @@ def trainModel(
         subset = Subset(trainDataset, trainSubsetIndices)
         loaderKwargs = {
             "batch_size": batchSize,
-            "shuffle": False,
+            "shuffle": True,  # FIXED: enable DataLoader shuffling for training
             "num_workers": numWorkers,
             "pin_memory": True,
         }
@@ -914,6 +998,9 @@ def trainModel(
         "vectorTimes": model.vectorTimes,
         "deviceOverride": deviceOverride,
         "modelName": modelName,
+        "actualTrainSamplesPerSub": actualTrainSamplesPerSub,
+        "numSubEpochs": numSubEpochs,
+        "desiredFullEpochs": desiredFullEpochs,
     }
     with open(os.path.join(runDir, "training_params.json"), "w") as f:
         json.dump(params, f, indent=4)
@@ -972,9 +1059,9 @@ def trainModel(
         bestValLoss = min(history["val_loss"])
         epochsNoImprove = len(history["val_loss"]) - history["val_loss"].index(bestValLoss) - 1
 
-    for epoch in range(startEpoch, numEpochs):
-        trainSubsetIndices = getTrainSubsetIndices(epoch)
-        valSubsetIndices = getValSubsetIndices(epoch)
+    for subEpoch in range(startEpoch, numSubEpochs):
+        trainSubsetIndices = getTrainSubsetIndices(subEpoch)
+        valSubsetIndices = getValSubsetIndices(subEpoch)
         trainLoader = buildTrainLoader(trainSubsetIndices)
         model.train()
         runningLoss, runningADE, runningFDE = 0.0, 0.0, 0.0
@@ -989,13 +1076,15 @@ def trainModel(
             f"left={valCounts['left']} s={valCounts['s']}"
         )
 
+        # Map sub-epoch index to full epoch count for scheduling/TF decay
+        fullEpoch = (subEpoch * trainSamplesPerEpoch) // max(1, totalTrainSamples)
         tfRatio = (
-            teacherForcingStart - (epoch / tfDecayEpochs) * (teacherForcingStart - teacherForcingEnd)
-            if epoch < tfDecayEpochs
+            teacherForcingStart - (fullEpoch / tfDecayEpochs) * (teacherForcingStart - teacherForcingEnd)
+            if fullEpoch < tfDecayEpochs
             else teacherForcingEnd
         )
 
-        print(f"###### Epoch {epoch + 1}/{numEpochs} - TF Ratio: {tfRatio:.2f} ######")
+        print(f"\n###### Sub-epoch {subEpoch + 1}/{numSubEpochs} (Full epoch {fullEpoch + 1}/{desiredFullEpochs}) - TF Ratio: {tfRatio:.2f} ######")
 
         optimizer.zero_grad()
         accumSteps = 0
@@ -1021,7 +1110,7 @@ def trainModel(
                 
                 # Check for NaN in predictions
                 if torch.isnan(preds).any():
-                    print(f"NaN detected in predictions at epoch {epoch+1}, batch {i}")
+                    print(f"NaN detected in predictions at full epoch {fullEpoch+1}, batch {i}")
                     print(f"Preds: {preds}")
                     print(f"Labels: {labels}")
                     print(f"PrevImg stats: min={prevImg.min()}, max={prevImg.max()}, mean={prevImg.mean()}")
@@ -1116,7 +1205,7 @@ def trainModel(
                     
                     # Check for NaN in validation predictions
                     if torch.isnan(preds).any():
-                        print(f"NaN detected in validation predictions at epoch {epoch+1}, batch {i}")
+                        print(f"NaN detected in validation predictions at full epoch {fullEpoch+1}, batch {i}")
                         continue
                     
                     lossMain = smoothnessKinematicLoss(preds, gtKinematic, gtPositions, perStepWeights, vectorTimesBatch)
@@ -1176,7 +1265,7 @@ def trainModel(
         if valLoss < bestValLoss:
             bestValLoss = valLoss
             checkpoint = {
-                'epoch': epoch,
+                'epoch': fullEpoch,
                 'model_state_dict': model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
                 'scheduler_state_dict': scheduler.state_dict(),
@@ -1190,7 +1279,7 @@ def trainModel(
             epochsNoImprove = 0
         else:
             checkpoint = {
-                'epoch': epoch,
+                'epoch': fullEpoch,
                 'model_state_dict': model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
                 'scheduler_state_dict': scheduler.state_dict(),

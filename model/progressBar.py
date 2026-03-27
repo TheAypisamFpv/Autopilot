@@ -1,13 +1,13 @@
-import time
 
 
 class Style:
     BLOCK = 0
     DOT_GRID = 1
 
-def getProgressBar(completion: float, wheelIndex: int = None, style: int = None, maxbarLength: int = 75):
+def getProgressBar(completion: float, wheelIndex: int = None, style: int = None, maxbarLength: int = 75) -> str:
     """
     Generate a progress bar with optional style selection.
+    When using it, your print should end with a \r, and 2 spaces are already included in the returned string.
     
     Args:
         completion (float): Progress completion between 0.0 and 1.0
@@ -18,8 +18,14 @@ def getProgressBar(completion: float, wheelIndex: int = None, style: int = None,
     Returns:
         str: Formatted progress bar string
     """
-    # Default style to BLOCK if None
-    if style is None:
+    # Default style to BLOCK if None or not recognized.
+    # Determine valid style values dynamically from `Style` so adding new styles
+    # won't require changing this check.
+    validStyles = {
+        v for k, v in vars(Style).items()
+        if k.isupper() and isinstance(v, int)
+    }
+    if style is None or style not in validStyles:
         style = Style.BLOCK
     
     # ANSI color codes
@@ -75,19 +81,20 @@ def getProgressBar(completion: float, wheelIndex: int = None, style: int = None,
         return f"Progress: {bar} {completionPercent:>6}%  {wheelChar}  "
 
 # Example usage
-# if __name__ == "__main__":
-#     # Default block style
-#     # for i in range(501):
-#     #     progress = i / 500
-#     #     print(getProgressBar(progress, wheelIndex=i), end='\r')
-#     #     time.sleep(0.03)
+if __name__ == "__main__":
+    import time
+    #Default block style
+    # for i in range(501):
+    #     progress = i / 500
+    #     print(getProgressBar(progress, wheelIndex=i), end='\r')
+    #     time.sleep(0.03)
 
-#     # print()
+    # print()
 
-#     # Dot grid style
-#     for i in range(501):
-#         progress = i / 500
-#         print(getProgressBar(progress, wheelIndex=i, style=Style.BLOCK), end='\r')
-#         time.sleep(0.03)
+    # Dot grid style
+    for i in range(501):
+        progress = i / 500
+        print(getProgressBar(progress, wheelIndex=i, style=3), end='\r')
+        time.sleep(0.03)
 
-#     print()
+    print()

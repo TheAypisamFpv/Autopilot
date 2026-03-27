@@ -272,10 +272,18 @@ class CrossAttentionDeltaKinematicDecoder(nn.Module):
     def _resolveVectorTimes(self, batchSize, device, dtype, vectorTimes):
         defaultTimes = self.vectorTimes.to(device=device, dtype=dtype)
         if vectorTimes is None:
+            # FIXED: dynamic fallback for non-12 predSteps using buildNonUniformTimeOffsets
+            if defaultTimes.numel() != self.predSteps:
+                dyn = torch.tensor(buildNonUniformTimeOffsets(self.predSteps, float(defaultTimes[-1])), device=device, dtype=dtype)
+                return dyn.unsqueeze(0).expand(batchSize, -1)
             return defaultTimes.unsqueeze(0).expand(batchSize, -1)
         if vectorTimes.dim() == 1:
             vectorTimes = vectorTimes.unsqueeze(0).expand(batchSize, -1)
         if vectorTimes.size(1) != self.predSteps:
+            # FIXED: dynamic fallback when provided vectorTimes length mismatches predSteps
+            if defaultTimes.numel() != self.predSteps:
+                dyn = torch.tensor(buildNonUniformTimeOffsets(self.predSteps, float(defaultTimes[-1])), device=device, dtype=dtype)
+                return dyn.unsqueeze(0).expand(batchSize, -1)
             return defaultTimes.unsqueeze(0).expand(batchSize, -1)
         return vectorTimes.to(device=device, dtype=dtype)
 
@@ -309,7 +317,13 @@ class CrossAttentionDeltaKinematicDecoder(nn.Module):
             if teacherForcing and gtTraj is not None:
                 useTeacherForcing = bool(torch.rand(1, device=featMap.device).item() < tfRatio)
 
-            previousState = gtTraj[:, stepIndex, :] if useTeacherForcing else currentState
+            # FIXED: teacher-forcing leakage (critical)
+            # Use one-step-lag teacher forcing for delta-recurrent model to avoid
+            # leaking the current-step target into the prediction for the same step.
+            if stepIndex == 0:
+                previousState = torch.zeros_like(currentState)
+            else:
+                previousState = gtTraj[:, stepIndex - 1, :] if useTeacherForcing else currentState
             timeEmbed = self.timeEmbedding(timeFeatures[:, stepIndex, :])
             queryState = hiddenState[-1]
             queryToken = self.queryProj(

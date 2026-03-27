@@ -3,6 +3,7 @@
 __pycache__/
 Test_drive/
 dataset/output*/
+ADS presentation/
 *.aux
 *.fdb_latexmk
 *.fls

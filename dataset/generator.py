@@ -652,7 +652,7 @@ def saveDatasetItem(outputDir: str, index: int, prevFrame: np.ndarray, currentFr
         vectors: List of trajectory vectors
         speed: Current speed in m/s
         acceleration: Current acceleration in m/s²
-        turnRate: Current turn rate in deg/s
+        turnRate: Current turn rate in rad/s
     """
     labelsDir = os.path.join(outputDir, "labels")
     os.makedirs(labelsDir, exist_ok=True)
@@ -739,7 +739,7 @@ def visualizeFutureTrajectory(
         vectors: List of future trajectory vectors.
         speed: Current speed in m/s.
         acceleration: Current acceleration in m/s².
-        turnRate: Current turn rate in deg/s.
+        turnRate: Current turn rate in rad/s.
         frameParams: Dictionary containing randomized parameters for the frame.
         worldPos: Optional world position (x, y, z) in meters.
         worldVel: Optional world velocity (vx, vy, vz) in m/s.
@@ -779,7 +779,7 @@ def visualizeFutureTrajectory(
     cv2.putText(currentFrame, f"acc = {acceleration:.1f} m.s-2",
                     (10, 35), 
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, textColor, 1, cv2.LINE_AA)
-    cv2.putText(currentFrame, f"turnRate = {turnRate:.1f} deg.s-1",
+    cv2.putText(currentFrame, f"turnRate = {turnRate:.1f} rad.s-1",
                     (10, 55), 
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, textColor, 1, cv2.LINE_AA)
 
@@ -1196,7 +1196,9 @@ def generateDatasetNvidiaClip(
         acceleration = math.sqrt(ax * ax + ay * ay)
 
         curvature = float(currentState['curvature'])
-        turnRate = math.degrees(curvature * speed)
+        # FIXED: yaw-rate unit mismatch between train and inference
+        # Use SI units: yaw-rate in radians per second (rad/s)
+        turnRate = curvature * speed  # rad/s (SI units, consistent with inference)
 
         if DEBUGVIZ:
             workerIdentity = mp.current_process()._identity
