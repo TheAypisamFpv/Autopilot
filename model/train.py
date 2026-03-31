@@ -1,4 +1,5 @@
 import os
+os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "threads=4;video_codec=h264;hw_decoders_any"  # helps FFmpeg on CPU
 import time
 import math
 from datetime import datetime
@@ -29,6 +30,7 @@ def computeCleanSubepochSchedule(totalTrainSamples: int, requestedSamplesPerSub:
     (actualSamplesPerSub, numSubEpochs, desiredFullEpochs) and prints a
     short summary of the chosen schedule.
     """
+    print(f"Computing clean sub-epoch schedule: totalTrainSamples={totalTrainSamples}, requestedSamplesPerSub={requestedSamplesPerSub}, minFullEpochs={minFullEpochs}")
     if totalTrainSamples <= 0:
         return 0, 0, 0
 
@@ -53,8 +55,12 @@ def computeCleanSubepochSchedule(totalTrainSamples: int, requestedSamplesPerSub:
     )
     return actualSamplesPerSub, numSubEpochs, desiredFullEpochs
 
-from CreateModel import TrajectoryModel
-from progressBar import getProgressBar
+try:
+    from .CreateModel import TrajectoryModel
+    from .progressBar import getProgressBar
+except ImportError:
+    from CreateModel import TrajectoryModel
+    from progressBar import getProgressBar
 
 # Set multiprocessing start method to 'spawn' for Windows compatibility
 if __name__ == '__main__':
@@ -84,6 +90,9 @@ class DrivingDataset(Dataset):
         self.labelsOnly = False
         self.verbose = verbose
         self.loadEgoHistory = loadEgoHistory
+        
+        self._videoCaches = {}          # videoPath -> (cap, lastFrameIndex)
+        self._maxCachedVideos = 32      # LRU limit to prevent memory explosion
 
         if not os.path.exists(self.imagesDir):
             self.labelsOnly = True
@@ -363,27 +372,35 @@ class DrivingDataset(Dataset):
         return egoHistoryArray
 
     def _readFramesFromVideo(self, videoPath, prevFrameIndex, frameIndex):
-        cap = cv2.VideoCapture(videoPath, cv2.CAP_MSMF)
+        """Robust video frame reader using FFmpeg backend (same as generator)."""
+        # Use the same reliable backend that worked for dataset generation
+        cap = cv2.VideoCapture(videoPath, cv2.CAP_FFMPEG)
         if not cap.isOpened():
-            cap = cv2.VideoCapture(videoPath)
+            cap = cv2.VideoCapture(videoPath)  # final fallback
+
         if not cap.isOpened():
-            return None, None
+            raise RuntimeError(f"Could not open video: {videoPath}")
 
         try:
+            # Seek and read previous frame
             cap.set(cv2.CAP_PROP_POS_FRAMES, prevFrameIndex)
             ret_prev, prevFrame = cap.read()
 
+            # Seek and read current frame
             cap.set(cv2.CAP_PROP_POS_FRAMES, frameIndex)
             ret_curr, currFrame = cap.read()
 
-            if not ret_prev or not ret_curr:
-                return None, None
+            if not ret_prev or not ret_curr or prevFrame is None or currFrame is None:
+                raise RuntimeError(f"Failed to read frames from video: {videoPath} ({prevFrameIndex}, {frameIndex})")
 
+            # Convert and resize exactly like the generator
             prevFrame = cv2.cvtColor(prevFrame, cv2.COLOR_BGR2RGB)
             currFrame = cv2.cvtColor(currFrame, cv2.COLOR_BGR2RGB)
             prevFrame = cv2.resize(prevFrame, (640, 360))
             currFrame = cv2.resize(currFrame, (640, 360))
+
             return Image.fromarray(prevFrame), Image.fromarray(currFrame)
+
         finally:
             cap.release()
 
@@ -600,6 +617,7 @@ def trainModel(
     intervalSeconds=None,
     deviceOverride=None,
     resumeModelPath=None,
+    stopAfterSubepochCallback=None,
 ):
     """
     Main training function for TrajectoryModel.
@@ -629,6 +647,9 @@ def trainModel(
         intervalSeconds (float or None): Time interval between prediction steps (inferred from labels if None).
         deviceOverride (str or None): Device to use ('cpu' or 'cuda'), or None for auto-detect.
         resumeModelPath (str or None): Path to a previously trained model to resume training from.
+        stopAfterSubepochCallback (callable or None): Optional callback called after each sub-epoch.
+            Signature: callback(subEpochIndex, numSubEpochs) -> bool.
+            If it returns True, training exits gracefully after checkpoint/history updates.
     """
     print()
 
@@ -748,14 +769,18 @@ def trainModel(
         transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
     ])
 
+    print("\nLoading dataset and preparing train/val split...")
+    print("Loading base dataset for indexing...")
     baseDataset = DrivingDataset(datasetDir, transform=None, maxSize=datasetMaxSize, predSteps=predSteps, verbose=True, loadEgoHistory=False)
+    print("Creating train dataset...")
     trainDataset = DrivingDataset(datasetDir, transform=trainTransform, maxSize=datasetMaxSize, predSteps=predSteps, verbose=False, loadEgoHistory=True)
+    print("Creating validation dataset...")
     valDataset = DrivingDataset(datasetDir, transform=valTransform, maxSize=datasetMaxSize, predSteps=predSteps, verbose=False, loadEgoHistory=True)
     totalSamples = len(baseDataset)
 
-    numWorkers = 1
-    if os.name == "nt":
-        print("Using DataLoader num_workers=1 on Windows with worker-safe lazy ego history loading.")
+    numWorkers = 4
+    # if os.name == "nt":
+    #     print("Using DataLoader num_workers=1 on Windows with worker-safe lazy ego history loading.")
 
     balancedPath = os.path.join(datasetDir, "balanced.json")
     balancedData = None
@@ -770,7 +795,7 @@ def trainModel(
         "s": balancedData.get("s", []) if balancedData else [],
     }
 
-
+    print("Mapping samples to class buckets for train/val split...")
     sampleIndexMap = {sampleId: idx for idx, sampleId in enumerate(baseDataset.samples)}
     classIndexBuckets = {key: [] for key in classBuckets}
     indexToClass = {}
@@ -794,6 +819,7 @@ def trainModel(
     rng = random.Random(splitSeed if splitSeed is not None else seed)
     rng.shuffle(clipKeys)
 
+    print("Performing clip-aware train/val split...")
     if totalClips <= 1:
         trainClipKeys = clipKeys
         valClipKeys = []
@@ -859,6 +885,7 @@ def trainModel(
         trainClipKeys = [ck for ck in clipKeys if ck in selectedTrainClips]
         valClipKeys = [ck for ck in clipKeys if ck not in selectedTrainClips]
 
+    print("Building train/val index lists from clip partitions...")
     # Build train/val index lists from clip partitions
     trainIndices = []
     valIndices = []
@@ -1039,7 +1066,7 @@ def trainModel(
     auxDynWeight = 0.02
     teacherForcingStart = 0.9
     teacherForcingEnd = 0.0
-    tfDecayEpochs = min(30, max(5, int(0.2 * numEpochs)))
+    tfDecayEpochs = 30
 
     bestValLoss = float("inf")
     epochsNoImprove = 0
@@ -1059,6 +1086,8 @@ def trainModel(
         bestValLoss = min(history["val_loss"])
         epochsNoImprove = len(history["val_loss"]) - history["val_loss"].index(bestValLoss) - 1
 
+    stoppedByScheduler = False
+
     for subEpoch in range(startEpoch, numSubEpochs):
         trainSubsetIndices = getTrainSubsetIndices(subEpoch)
         valSubsetIndices = getValSubsetIndices(subEpoch)
@@ -1077,12 +1106,12 @@ def trainModel(
         )
 
         # Map sub-epoch index to full epoch count for scheduling/TF decay
+        if subEpoch < tfDecayEpochs:
+            tfRatio = teacherForcingStart - (subEpoch / tfDecayEpochs) * (teacherForcingStart - teacherForcingEnd)
+        else:
+            tfRatio = teacherForcingEnd
+
         fullEpoch = (subEpoch * trainSamplesPerEpoch) // max(1, totalTrainSamples)
-        tfRatio = (
-            teacherForcingStart - (fullEpoch / tfDecayEpochs) * (teacherForcingStart - teacherForcingEnd)
-            if fullEpoch < tfDecayEpochs
-            else teacherForcingEnd
-        )
 
         print(f"\n###### Sub-epoch {subEpoch + 1}/{numSubEpochs} (Full epoch {fullEpoch + 1}/{desiredFullEpochs}) - TF Ratio: {tfRatio:.2f} ######")
 
@@ -1295,24 +1324,50 @@ def trainModel(
             print(f"Early stopping after {patience} epochs with no improvement.")
             break
 
+        if stopAfterSubepochCallback is not None:
+            shouldStop = bool(stopAfterSubepochCallback(subEpoch + 1, numSubEpochs))
+            if shouldStop:
+                print("Stopping training after current sub-epoch as requested by scheduler.")
+                stoppedByScheduler = True
+                break
+
         print("\n")
 
     plotHistory(history, os.path.join(runDir, "loss_plot.png"))
-    print("Training completed.")
+
+    lastModelPath = os.path.join(runDir, "last_model.pth")
+    bestModelPath = os.path.join(runDir, "best_model.pth")
+    if os.path.exists(lastModelPath):
+        resumePath = lastModelPath
+    elif os.path.exists(bestModelPath):
+        resumePath = bestModelPath
+    else:
+        resumePath = resumeModelPath
+
+    if stoppedByScheduler:
+        print("Training paused by scheduler.")
+    else:
+        print("Training completed.")
+
+    return {
+        "runDir": runDir,
+        "resumeModelPath": resumePath,
+        "stoppedByScheduler": stoppedByScheduler,
+    }
 
 
 if __name__ == "__main__":
     """
     PLEASE MAKE SURE TO USE A CORRECT DATASET (like image size, time window, etc.)
     """
-    datasetPath = r"F:\Projects\Autopilot\dataset_output\output_NVIDIA_12_3.0_0.1_framesize640x360(1)"
+    datasetPath = r"C:\Users\Projet_3NC\Desktop\SC-ADS\dataset_output\output_NVIDIA_12_3.0_0.1_framesize640x360"
     datasetMaxSize = None           # Maximum number of samples to load from the dataset (None = use all available)
     numEpochs = 2_000               # ~1 full pass at 10k samples/epoch for ~9.6M samples
-    patience = 100                   # Early stopping patience (stop if no val improvement for this many epochs)
-    batchSize = 12                  # Number of samples per training batch (controls GPU memory usage)
-    gradAccumSteps = 2              # Gradient accumulation steps (simulates larger effective batch if >1)
+    patience = 100                  # Early stopping patience (stop if no val improvement for this many epochs)
+    batchSize = 24                  # Number of samples per training batch (controls GPU memory usage)
+    gradAccumSteps = 1              # Gradient accumulation steps (simulates larger effective batch if >1)
     trainValSplit = 0.8             # Train/validation split ratio
-    trainSamplesPerEpoch = 5_000    # Random samples per epoch for fast iterations
+    trainSamplesPerEpoch = 8_000    # Random samples per epoch for fast iterations
     valSamplesPerEpoch = trainSamplesPerEpoch * 2                          # Fixed val samples per epoch (2x trainSamplesPerEpoch)
     seed = 42                       # Base seed for reproducibility
     splitSeed = 42                  # Train/val split seed (keep fixed to avoid contamination)
@@ -1323,7 +1378,7 @@ if __name__ == "__main__":
     numHeads = 8                    # Cross-attention heads
     numLayers = 4                   # Recurrent planner depth
     useAuxDyn = False               # Whether to enable auxiliary dynamics head (speed/accel prediction)
-    resumeModelPath = r"D:\VS_Python_Project\Autopilot\Autopilot\training\run23\last_model.pth"  # Set to path like "training/run13/best_model.pth" to resume training
+    resumeModelPath =  r"C:\Users\Projet_3NC\Desktop\SC-ADS\Autopilot\training\run23\last_model.pth"  # Set to path like "training/run13/best_model.pth" to resume training
 
     trainModel(
         datasetDir=datasetPath,

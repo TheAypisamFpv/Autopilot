@@ -396,8 +396,8 @@ def balanceDataset(
 
 
 if __name__ == "__main__":
-    datasetDir = r"F:\Projects\Autopilot\dataset_output\output_NVIDIA_12_3.0_0.1_framesize640x360(1)"
-    calibrationRoot = r"F:\Projects\Autopilot\nvidia_dataset\calibration"
+    datasetDir = r"C:\Users\Projet_3NC\Desktop\SC-ADS\dataset_output\output_NVIDIA_12_3.0_0.1_framesize640x360"
+    calibrationRoot = r"C:\Users\Projet_3NC\Desktop\SC-ADS\nvidia_dataset\calibration"
 
     threadWorkers = 16
     seed = 42

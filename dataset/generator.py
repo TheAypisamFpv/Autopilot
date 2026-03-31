@@ -12,7 +12,7 @@ import multiprocessing as mp
 import time
 
 # Set environment variable to increase read attempts for potential network issues with large video files
-# os.environ['OPENCV_FFMPEG_READ_ATTEMPTS'] = '8192'
+os.environ['OPENCV_FFMPEG_READ_ATTEMPTS'] = '8192'
 
 
 def buildNonUniformTimeOffsets(vectorCount: int, totalTime: float) -> List[float]:
@@ -1055,7 +1055,7 @@ def generateDatasetNvidiaClip(
     indexLock: Optional[Any] = None,
     progressDict: Optional[Any] = None,
     progressModulo: int = 10,
-    verbose: bool = True,
+    verbose: bool = False,
     statusDict: Optional[Any] = None
 ) -> int:
     """
@@ -1096,7 +1096,7 @@ def generateDatasetNvidiaClip(
             print(f"Skipping {clipUuid}: empty camera timestamps.")
         return startIndex
 
-    cap = cv2.VideoCapture(cameraVideoPath, cv2.CAP_MSMF)
+    cap = cv2.VideoCapture(cameraVideoPath, cv2.CAP_FFMPEG)
     if not cap.isOpened():
         if verbose:
             print("Error: Could not open video with MSMF backend, trying default...")
@@ -1484,8 +1484,8 @@ def main(
 
 
 if __name__ == "__main__":
-    videoPath = r"F:\Projects\Autopilot\nvidia_dataset"
-    outputDir = r"F:\Projects\Autopilot\dataset_output"
+    videoPath = r"C:\Users\Projet_3NC\Desktop\SC-ADS\nvidia_dataset"
+    outputDir = r"C:\Users\Projet_3NC\Desktop\SC-ADS\dataset_output"
     frameInterval = 0 # interval between each frame sample, in seconds
     imageSize = (640, 360)  # Width, Height
     
