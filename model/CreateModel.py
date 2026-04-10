@@ -294,7 +294,7 @@ class CrossAttentionDeltaKinematicDecoder(nn.Module):
         deltaTimes = torch.clamp(deltaTimes, min=1e-3)
         return torch.stack([effectiveTimes, deltaTimes], dim=-1)
 
-    def forward(self, featMap, egoContext, vectorTimes=None, teacherForcing=True, tfRatio=0.9, gtTraj=None):
+    def forward(self, featMap, egoContext, vectorTimes=None, teacherForcing=True, tfRatio=0.9, gtTraj=None, returnAttn=False):
         batchSize, _, height, width = featMap.shape
         memory = self.memoryProj(featMap).flatten(2).permute(0, 2, 1)
         memory = self.memoryNorm(memory)
@@ -302,15 +302,20 @@ class CrossAttentionDeltaKinematicDecoder(nn.Module):
 
         if egoContext is None:
             egoContext = torch.zeros(batchSize, 256, device=featMap.device, dtype=featMap.dtype)
+        else:
+            egoContext = torch.nan_to_num(egoContext, nan=0.0, posinf=100.0, neginf=-100.0)
+            egoContext = torch.clamp(egoContext, min=-100.0, max=100.0)
 
         effectiveTimes = self._resolveVectorTimes(batchSize, featMap.device, featMap.dtype, vectorTimes)
+        effectiveTimes = torch.nan_to_num(effectiveTimes, nan=0.1, posinf=3.0, neginf=0.1)
+        effectiveTimes = torch.clamp(effectiveTimes, min=1e-3, max=10.0)
         timeFeatures = self._buildTimeFeatures(effectiveTimes)
 
         initState = torch.tanh(self.initStateProj(torch.cat([pooledMemory, egoContext], dim=1)))
         hiddenState = initState.unsqueeze(0).repeat(self.numLayers, 1, 1).contiguous()
         currentState = torch.zeros(batchSize, 2, device=featMap.device, dtype=featMap.dtype)
         predictions = []
-        attnMaps = []
+        attnMaps = [] if returnAttn else None
 
         for stepIndex in range(self.predSteps):
             useTeacherForcing = False
@@ -338,17 +343,23 @@ class CrossAttentionDeltaKinematicDecoder(nn.Module):
                 )
             ).unsqueeze(1)
 
-            attnContext, attnWeights = self.crossAttention(queryToken, memory, memory, need_weights=True)
+            attnContext, attnWeights = self.crossAttention(queryToken, memory, memory, need_weights=returnAttn)
             attnContext = self.attnContextProj(torch.cat([attnContext.squeeze(1), queryState], dim=1))
             stepInput = torch.cat([attnContext, timeEmbed, egoContext, previousState], dim=1).unsqueeze(1)
             gruOut, hiddenState = self.gru(stepInput, hiddenState)
             deltaState = self.deltaHead(gruOut.squeeze(1))
+            deltaState = torch.nan_to_num(deltaState, nan=0.0, posinf=50.0, neginf=-50.0)
+            deltaState = torch.clamp(deltaState, min=-50.0, max=50.0)
             currentState = currentState + deltaState
+            currentState = torch.clamp(currentState, min=-200.0, max=200.0)
             predictions.append(currentState)
-            attnMaps.append(attnWeights.view(batchSize, 1, height, width))
+            if returnAttn and attnWeights is not None:
+                attnMaps.append(attnWeights.view(batchSize, 1, height, width))
 
         preds = torch.stack(predictions, dim=1)
-        return preds, attnMaps
+        preds = torch.nan_to_num(preds, nan=0.0, posinf=200.0, neginf=-200.0)
+        preds = torch.clamp(preds, min=-200.0, max=200.0)
+        return preds, (attnMaps if returnAttn else [])
 
 
 # -------------------------
@@ -418,7 +429,7 @@ class SmoothKinematicTrajectoryModel(nn.Module):
         self.use_aux_dyn = False
         self.egoDropoutProb = float(egoDropoutProb)
 
-    def forward(self, imgT, imgTm1, gtTraj=None, teacherForcing=True, tfRatio=0.9, egoHistory=None, vectorTimes=None, returnMotionMap=False):
+    def forward(self, imgT, imgTm1, gtTraj=None, teacherForcing=True, tfRatio=0.9, egoHistory=None, vectorTimes=None, returnMotionMap=False, returnAttn=False):
         if egoHistory is None:
             batchSize = imgT.shape[0]
             egoHistory = torch.zeros(batchSize, 8, 3, device=imgT.device, dtype=imgT.dtype)
@@ -438,6 +449,7 @@ class SmoothKinematicTrajectoryModel(nn.Module):
             teacherForcing=teacherForcing,
             tfRatio=tfRatio,
             gtTraj=gtTraj,
+            returnAttn=returnAttn,
         )
         aux = None
         if returnMotionMap:

@@ -1,5 +1,7 @@
 import os
-os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "threads=4;video_codec=h264;hw_decoders_any"  # helps FFmpeg on CPU
+# Keep FFmpeg decoding conservative by default for training stability.
+# If needed, users can override this env var before launching training.
+os.environ.setdefault("OPENCV_FFMPEG_CAPTURE_OPTIONS", "threads=2;video_codec=h264")
 import time
 import math
 from datetime import datetime
@@ -372,37 +374,46 @@ class DrivingDataset(Dataset):
         return egoHistoryArray
 
     def _readFramesFromVideo(self, videoPath, prevFrameIndex, frameIndex):
-        """Robust video frame reader using FFmpeg backend (same as generator)."""
-        # Use the same reliable backend that worked for dataset generation
-        cap = cv2.VideoCapture(videoPath, cv2.CAP_FFMPEG)
-        if not cap.isOpened():
-            cap = cv2.VideoCapture(videoPath)  # final fallback
+        """Robust video frame reader with backend fallback and safe retries."""
+        backendCandidates = [
+            cv2.CAP_FFMPEG,
+            cv2.CAP_DSHOW,
+            cv2.CAP_MSMF,
+            None,
+        ]
 
-        if not cap.isOpened():
-            raise RuntimeError(f"Could not open video: {videoPath}")
+        lastError = None
+        for backend in backendCandidates:
+            cap = cv2.VideoCapture(videoPath) if backend is None else cv2.VideoCapture(videoPath, backend)
+            if not cap.isOpened():
+                cap.release()
+                continue
 
-        try:
-            # Seek and read previous frame
-            cap.set(cv2.CAP_PROP_POS_FRAMES, prevFrameIndex)
-            ret_prev, prevFrame = cap.read()
+            try:
+                cap.set(cv2.CAP_PROP_POS_FRAMES, prevFrameIndex)
+                ret_prev, prevFrame = cap.read()
 
-            # Seek and read current frame
-            cap.set(cv2.CAP_PROP_POS_FRAMES, frameIndex)
-            ret_curr, currFrame = cap.read()
+                cap.set(cv2.CAP_PROP_POS_FRAMES, frameIndex)
+                ret_curr, currFrame = cap.read()
 
-            if not ret_prev or not ret_curr or prevFrame is None or currFrame is None:
-                raise RuntimeError(f"Failed to read frames from video: {videoPath} ({prevFrameIndex}, {frameIndex})")
+                if not ret_prev or not ret_curr or prevFrame is None or currFrame is None:
+                    lastError = RuntimeError(
+                        f"Failed to read frames from video: {videoPath} ({prevFrameIndex}, {frameIndex})"
+                    )
+                    continue
 
-            # Convert and resize exactly like the generator
-            prevFrame = cv2.cvtColor(prevFrame, cv2.COLOR_BGR2RGB)
-            currFrame = cv2.cvtColor(currFrame, cv2.COLOR_BGR2RGB)
-            prevFrame = cv2.resize(prevFrame, (640, 360))
-            currFrame = cv2.resize(currFrame, (640, 360))
+                prevFrame = cv2.cvtColor(prevFrame, cv2.COLOR_BGR2RGB)
+                currFrame = cv2.cvtColor(currFrame, cv2.COLOR_BGR2RGB)
+                prevFrame = cv2.resize(prevFrame, (640, 360))
+                currFrame = cv2.resize(currFrame, (640, 360))
+                return Image.fromarray(prevFrame), Image.fromarray(currFrame)
 
-            return Image.fromarray(prevFrame), Image.fromarray(currFrame)
+            finally:
+                cap.release()
 
-        finally:
-            cap.release()
+        if lastError is not None:
+            raise lastError
+        raise RuntimeError(f"Could not open video: {videoPath}")
 
     def __getitem__(self, idx):
         sampleId = self.samples[idx]
@@ -430,7 +441,17 @@ class DrivingDataset(Dataset):
             if self.egoHistoryArray is not None and idx < len(self.egoHistoryArray):
                 egoHistory = self.egoHistoryArray[idx]
 
-        return prevImage, currentImage, dynamicData, torch.from_numpy(vectors).to(self.dtype), torch.from_numpy(vectorTimes).to(self.dtype), torch.from_numpy(egoHistory).to(self.dtype)
+        vectors = np.nan_to_num(vectors, nan=0.0, posinf=200.0, neginf=-200.0)
+        vectorTimes = np.nan_to_num(vectorTimes, nan=0.1, posinf=3.0, neginf=0.1)
+        vectorTimes = np.clip(vectorTimes, 1e-3, 10.0)
+        egoHistory = np.nan_to_num(egoHistory, nan=0.0, posinf=100.0, neginf=-100.0)
+
+        dynamicData = torch.nan_to_num(dynamicData, nan=0.0, posinf=100.0, neginf=-100.0)
+        vectorsTensor = torch.from_numpy(vectors).to(self.dtype)
+        vectorTimesTensor = torch.from_numpy(vectorTimes).to(self.dtype)
+        egoHistoryTensor = torch.from_numpy(egoHistory).to(self.dtype)
+
+        return prevImage, currentImage, dynamicData, vectorsTensor, vectorTimesTensor, egoHistoryTensor
 
 
 def getRunDir(baseDir="training"):
@@ -457,7 +478,7 @@ def plotHistory(history, savePath):
     plt.xlabel("Epoch")
     plt.ylabel("Loss")
     plt.legend()
-    plt.savefig(savePath)
+    plt.savefig(savePath, dpi=400)
     plt.close()
 
 
@@ -755,7 +776,11 @@ def trainModel(
         else (torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu"))
     )
     useAmp = device.type == "cuda"
-    scaler = GradScaler(device='cuda', enabled=useAmp)
+    ampDtype = torch.bfloat16 if (useAmp and torch.cuda.is_bf16_supported()) else torch.float16
+    useGradScaler = useAmp and ampDtype == torch.float16
+    if useAmp:
+        print(f"AMP enabled for speed/stability: dtype={ampDtype}, grad_scaler={useGradScaler}")
+    scaler = GradScaler(device='cuda', enabled=useGradScaler)
 
     trainTransform = transforms.Compose([
         transforms.Resize((360, 640)),
@@ -778,9 +803,21 @@ def trainModel(
     valDataset = DrivingDataset(datasetDir, transform=valTransform, maxSize=datasetMaxSize, predSteps=predSteps, verbose=False, loadEgoHistory=True)
     totalSamples = len(baseDataset)
 
-    numWorkers = 4
-    # if os.name == "nt":
-    #     print("Using DataLoader num_workers=1 on Windows with worker-safe lazy ego history loading.")
+    labelsOnlyMode = bool(trainDataset.labelsOnly or valDataset.labelsOnly)
+    if labelsOnlyMode:
+        # Video-decoding mode can spike VRAM/shared memory on Windows when using multiple workers
+        # and hardware decoders. Force a conservative setup.
+        os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "threads=2;video_codec=h264"
+        numWorkers = 0 if os.name == "nt" else 1
+        pinMemory = False
+        print(
+            "Video-decoding dataset mode detected (no images folder). "
+            f"Using num_workers={numWorkers}, pin_memory={pinMemory}, "
+            "FFmpeg CPU decode to avoid decoder VRAM spikes."
+        )
+    else:
+        numWorkers = 2 if os.name == "nt" else 4
+        pinMemory = device.type == "cuda"
 
     balancedPath = os.path.join(datasetDir, "balanced.json")
     balancedData = None
@@ -951,7 +988,7 @@ def trainModel(
             "batch_size": batchSize,
             "shuffle": True,  # FIXED: enable DataLoader shuffling for training
             "num_workers": numWorkers,
-            "pin_memory": True,
+            "pin_memory": pinMemory,
         }
         if numWorkers > 0:
             loaderKwargs["persistent_workers"] = os.name != "nt"
@@ -964,7 +1001,7 @@ def trainModel(
             "batch_size": batchSize,
             "shuffle": False,
             "num_workers": numWorkers,
-            "pin_memory": True,
+            "pin_memory": pinMemory,
         }
         if numWorkers > 0:
             loaderKwargs["persistent_workers"] = os.name != "nt"
@@ -1068,6 +1105,15 @@ def trainModel(
     teacherForcingEnd = 0.0
     tfDecayEpochs = 30
 
+    # Non-finite safety policy: tolerate occasional bad batches but stop sustained instability.
+    if labelsOnlyMode and device.type == "cuda":
+        nonFiniteFractionLimit = 0.03
+        nonFiniteMinLimit = 6
+    else:
+        nonFiniteFractionLimit = 0.05
+        nonFiniteMinLimit = 8
+    maxConsecutiveNonFiniteTrainBatches = 3
+
     bestValLoss = float("inf")
     epochsNoImprove = 0
     # Use the creation time of the saved training params as the overall training start
@@ -1087,11 +1133,18 @@ def trainModel(
         epochsNoImprove = len(history["val_loss"]) - history["val_loss"].index(bestValLoss) - 1
 
     stoppedByScheduler = False
+    stoppedByNonFinite = False
 
     for subEpoch in range(startEpoch, numSubEpochs):
         trainSubsetIndices = getTrainSubsetIndices(subEpoch)
         valSubsetIndices = getValSubsetIndices(subEpoch)
         trainLoader = buildTrainLoader(trainSubsetIndices)
+        numTrainBatches = max(1, len(trainLoader))
+        maxNonFiniteTrainBatchesPerSubepoch = max(
+            nonFiniteMinLimit,
+            int(math.ceil(nonFiniteFractionLimit * numTrainBatches)),
+        )
+
         model.train()
         runningLoss, runningADE, runningFDE = 0.0, 0.0, 0.0
         epochStartTime = time.time()
@@ -1114,9 +1167,17 @@ def trainModel(
         fullEpoch = (subEpoch * trainSamplesPerEpoch) // max(1, totalTrainSamples)
 
         print(f"\n###### Sub-epoch {subEpoch + 1}/{numSubEpochs} (Full epoch {fullEpoch + 1}/{desiredFullEpochs}) - TF Ratio: {tfRatio:.2f} ######")
+        print(
+            "Non-finite guard: "
+            f"max_per_subepoch={maxNonFiniteTrainBatchesPerSubepoch}, "
+            f"max_consecutive={maxConsecutiveNonFiniteTrainBatches}"
+        )
 
         optimizer.zero_grad()
         accumSteps = 0
+        trainNonFiniteBatches = 0
+        consecutiveNonFiniteTrainBatches = 0
+        processedTrainSamples = 0
 
         for i, (prevImg, currentImg, dynamicData, labels, vectorTimesBatch, egoHistory) in enumerate(trainLoader):
             prevImg = prevImg.to(device)
@@ -1124,7 +1185,13 @@ def trainModel(
             labels = labels.to(device)
             vectorTimesBatch = vectorTimesBatch.to(device)
             egoHistory = egoHistory.to(device)
-            batchSize = labels.size(0)
+            vectorTimesBatch = torch.nan_to_num(vectorTimesBatch, nan=0.1, posinf=3.0, neginf=0.1)
+            vectorTimesBatch = torch.clamp(vectorTimesBatch, min=1e-3, max=10.0)
+            if not torch.isfinite(egoHistory).all():
+                egoHistory = torch.nan_to_num(egoHistory, nan=0.0, posinf=100.0, neginf=-100.0)
+                egoHistory = torch.clamp(egoHistory, min=-100.0, max=100.0)
+
+            batchSizeCurrent = labels.size(0)
 
             gtKinematic, gtPositions = buildKinematicTargets(labels, vectorTimesBatch)
 
@@ -1134,19 +1201,56 @@ def trainModel(
                 maxT = float(meanTimes.max()) if meanTimes.numel() else 1.0
                 perStepWeights = torch.exp(-meanTimes / max(maxT, 1e-6)) * 1.5 + 0.3
 
-            with autocast(device_type='cuda', enabled=useAmp):
-                preds, auxOut, _ = model(currentImg, prevImg, gtTraj=gtKinematic, teacherForcing=True, tfRatio=tfRatio, egoHistory=egoHistory, vectorTimes=vectorTimesBatch)
-                
-                # Check for NaN in predictions
-                if torch.isnan(preds).any():
-                    print(f"NaN detected in predictions at full epoch {fullEpoch+1}, batch {i}")
-                    print(f"Preds: {preds}")
-                    print(f"Labels: {labels}")
-                    print(f"PrevImg stats: min={prevImg.min()}, max={prevImg.max()}, mean={prevImg.mean()}")
-                    print(f"CurrentImg stats: min={currentImg.min()}, max={currentImg.max()}, mean={currentImg.mean()}")
-                    continue  # or break to stop training
+            with autocast(device_type='cuda', dtype=ampDtype, enabled=useAmp):
+                preds, auxOut, _ = model(
+                    currentImg,
+                    prevImg,
+                    gtTraj=gtKinematic,
+                    teacherForcing=True,
+                    tfRatio=tfRatio,
+                    egoHistory=egoHistory,
+                    vectorTimes=vectorTimesBatch,
+                    returnAttn=False,
+                )
+
+                # Keep non-finite diagnostics lightweight to avoid severe console slowdown.
+                finiteMask = torch.isfinite(preds)
+                if not finiteMask.all():
+                    trainNonFiniteBatches += 1
+                    consecutiveNonFiniteTrainBatches += 1
+                    if trainNonFiniteBatches <= 3 or trainNonFiniteBatches % 50 == 0:
+                        finiteRatio = finiteMask.float().mean().item()
+                        print(
+                            f"Non-finite predictions at full epoch {fullEpoch + 1}, batch {i}. "
+                            f"Skipped train batches this sub-epoch: {trainNonFiniteBatches}. "
+                            f"Consecutive non-finite batches: {consecutiveNonFiniteTrainBatches}. "
+                            f"Finite ratio in preds: {finiteRatio:.4f}"
+                        )
+
+                    # Reset partial gradient accumulation and release cached blocks after bad batches.
+                    if accumSteps > 0:
+                        optimizer.zero_grad(set_to_none=True)
+                        accumSteps = 0
+                    if device.type == "cuda" and trainNonFiniteBatches % 10 == 0:
+                        torch.cuda.empty_cache()
+
+                    if (
+                        trainNonFiniteBatches >= maxNonFiniteTrainBatchesPerSubepoch
+                        or consecutiveNonFiniteTrainBatches >= maxConsecutiveNonFiniteTrainBatches
+                    ):
+                        print(
+                            "Reached non-finite batch safety limit for this sub-epoch. "
+                            "Stopping run early to prevent VRAM runaway."
+                        )
+                        stoppedByNonFinite = True
+                        break
+                    continue
+
+                consecutiveNonFiniteTrainBatches = 0
                 
                 lossMain = smoothnessKinematicLoss(preds, gtKinematic, gtPositions, perStepWeights, vectorTimesBatch)
+                if not torch.isfinite(lossMain):
+                    lossMain = torch.tensor(0.0, device=device, dtype=preds.dtype)
                 loss = lossMain
 
                 if useAuxDyn and auxOut is not None:
@@ -1170,11 +1274,12 @@ def trainModel(
                     globalStep += 1
                 accumSteps = 0
 
-            runningLoss += lossMain.item() * batchSize
+            processedTrainSamples += batchSizeCurrent
+            runningLoss += lossMain.item() * batchSizeCurrent
             predPositions = kinematicIntegration(preds.detach(), vectorTimesBatch)
             ade, fde = adeFde(predPositions, gtPositions)
-            runningADE += ade * batchSize
-            runningFDE += fde * batchSize
+            runningADE += ade * batchSizeCurrent
+            runningFDE += fde * batchSizeCurrent
 
             completion = (i + 1) / len(trainLoader)
             epochElapsed = time.time() - epochStartTime
@@ -1188,9 +1293,22 @@ def trainModel(
             m, s = divmod(rem, 60)
             elapsedFmt = f"{h:02d}:{m:02d}:{s:02d}"
 
-            avgLoss = runningLoss / ((i + 1) * batchSize)
+            avgLoss = runningLoss / max(1, processedTrainSamples)
             print(f"{getProgressBar(completion, wheelIndex=i, maxbarLength=75)}"
-                  f"Avg Train Loss: {avgLoss/batchesDone:.4f} - ETA: {etaTime} - Time: {elapsedFmt}", end="\r")
+                f"Avg Train Loss: {avgLoss:.4f} - ETA: {etaTime} - Time: {elapsedFmt}", end="\r")
+
+        if stoppedByNonFinite:
+            if accumSteps > 0:
+                optimizer.zero_grad(set_to_none=True)
+                accumSteps = 0
+            if device.type == "cuda":
+                torch.cuda.empty_cache()
+                torch.cuda.ipc_collect()
+            print("Training stopped early due to non-finite predictions.")
+            break
+
+        if trainNonFiniteBatches > 0:
+            print(f"\nSkipped {trainNonFiniteBatches} train batches due to non-finite predictions in this sub-epoch.")
 
         trainLoss = runningLoss / len(trainLoader.dataset)
         trainADE = runningADE / len(trainLoader.dataset)
@@ -1210,6 +1328,8 @@ def trainModel(
         bucketAde = {"straight": 0.0, "right": 0.0, "left": 0.0, "s": 0.0}
         bucketFde = {"straight": 0.0, "right": 0.0, "left": 0.0, "s": 0.0}
         valCursor = 0
+        valNonFiniteBatches = 0
+        processedValSamples = 0
 
         with torch.no_grad():
             for i, (prevImg, currentImg, dynamicData, labels, vectorTimesBatch, egoHistory) in enumerate(valLoader):
@@ -1218,9 +1338,15 @@ def trainModel(
                 labels = labels.to(device)
                 vectorTimesBatch = vectorTimesBatch.to(device)
                 egoHistory = egoHistory.to(device)
-                batchSize = labels.size(0)
-                batchIndices = valSubsetIndices[valCursor:valCursor + batchSize]
-                valCursor += batchSize
+                vectorTimesBatch = torch.nan_to_num(vectorTimesBatch, nan=0.1, posinf=3.0, neginf=0.1)
+                vectorTimesBatch = torch.clamp(vectorTimesBatch, min=1e-3, max=10.0)
+                if not torch.isfinite(egoHistory).all():
+                    egoHistory = torch.nan_to_num(egoHistory, nan=0.0, posinf=100.0, neginf=-100.0)
+                    egoHistory = torch.clamp(egoHistory, min=-100.0, max=100.0)
+
+                batchSizeCurrent = labels.size(0)
+                batchIndices = valSubsetIndices[valCursor:valCursor + batchSizeCurrent]
+                valCursor += batchSizeCurrent
 
                 gtKinematic, gtPositions = buildKinematicTargets(labels, vectorTimesBatch)
 
@@ -1229,20 +1355,40 @@ def trainModel(
                     meanTimes = vectorTimesBatch.mean(dim=0)
                     maxT = float(meanTimes.max()) if meanTimes.numel() else 1.0
                     perStepWeights = torch.exp(-meanTimes / max(maxT, 1e-6)) * 1.5 + 0.3
-                with autocast(device_type='cuda', enabled=useAmp):
-                    preds, _, _ = model(currentImg, prevImg, teacherForcing=False, tfRatio=0.0, egoHistory=egoHistory, vectorTimes=vectorTimesBatch)
-                    
-                    # Check for NaN in validation predictions
-                    if torch.isnan(preds).any():
-                        print(f"NaN detected in validation predictions at full epoch {fullEpoch+1}, batch {i}")
+                with autocast(device_type='cuda', dtype=ampDtype, enabled=useAmp):
+                    preds, _, _ = model(
+                        currentImg,
+                        prevImg,
+                        teacherForcing=False,
+                        tfRatio=0.0,
+                        egoHistory=egoHistory,
+                        vectorTimes=vectorTimesBatch,
+                        returnAttn=False,
+                    )
+
+                    finiteMask = torch.isfinite(preds)
+                    if not finiteMask.all():
+                        valNonFiniteBatches += 1
+                        if valNonFiniteBatches <= 3 or valNonFiniteBatches % 50 == 0:
+                            finiteRatio = finiteMask.float().mean().item()
+                            print(
+                                f"Non-finite validation predictions at full epoch {fullEpoch + 1}, batch {i}. "
+                                f"Skipped val batches this sub-epoch: {valNonFiniteBatches}. "
+                                f"Finite ratio in preds: {finiteRatio:.4f}"
+                            )
+                        if device.type == "cuda" and valNonFiniteBatches % 10 == 0:
+                            torch.cuda.empty_cache()
                         continue
                     
                     lossMain = smoothnessKinematicLoss(preds, gtKinematic, gtPositions, perStepWeights, vectorTimesBatch)
-                valLoss += lossMain.item() * labels.size(0)
+                    if not torch.isfinite(lossMain):
+                        continue
+                processedValSamples += batchSizeCurrent
+                valLoss += lossMain.item() * batchSizeCurrent
                 predPositions = kinematicIntegration(preds, vectorTimesBatch)
                 ade, fde = adeFde(predPositions, gtPositions)
-                valADE += ade * labels.size(0)
-                valFDE += fde * labels.size(0)
+                valADE += ade * batchSizeCurrent
+                valFDE += fde * batchSizeCurrent
 
                 diff = predPositions - gtPositions
                 dists = torch.norm(diff, dim=-1)
@@ -1263,8 +1409,11 @@ def trainModel(
                 valEtaFinish = datetime.fromtimestamp(time.time() + valEta)
                 valEtaTime = valEtaFinish.strftime("%Y-%m-%d %H:%M:%S")
                 print(f"{getProgressBar(completion, wheelIndex=i, maxbarLength=75)}"
-                    f"Avg Val Loss: {valLoss/batchesDone:.4f} (best: {bestValLoss:.4f})"
+                    f"Avg Val Loss: {valLoss/max(1, processedValSamples):.4f} (best: {bestValLoss:.4f})"
                     f" - ETA: {valEtaTime}", end="\r")
+
+        if valNonFiniteBatches > 0:
+            print(f"\nSkipped {valNonFiniteBatches} validation batches due to non-finite predictions in this sub-epoch.")
 
         valLoss /= len(valLoader.dataset)
         valADE /= len(valLoader.dataset)
@@ -1346,6 +1495,8 @@ def trainModel(
 
     if stoppedByScheduler:
         print("Training paused by scheduler.")
+    elif stoppedByNonFinite:
+        print("Training paused by non-finite safety guard.")
     else:
         print("Training completed.")
 
@@ -1353,6 +1504,7 @@ def trainModel(
         "runDir": runDir,
         "resumeModelPath": resumePath,
         "stoppedByScheduler": stoppedByScheduler,
+        "stoppedByNonFinite": stoppedByNonFinite,
     }
 
 

@@ -22,7 +22,10 @@ def formatHour(hourFloat):
     return f"{hours:02d}:{minutes:02d}"
 
 
-def isNoTrainingWindow(now, noTrainingStartHour, noTrainingEndHour, weekendsTraining):
+def isNoTrainingWindow(now, enableNoTrainingHours, noTrainingStartHour, noTrainingEndHour, weekendsTraining):
+    if not enableNoTrainingHours:
+        return False
+
     isWeekday = now.weekday() < 5
     applyNoTrainingWindow = isWeekday or (not weekendsTraining)
     if not applyNoTrainingWindow:
@@ -89,11 +92,12 @@ def freeTrainingResources():
     print("Resource freeup finished.")
 
 
-def buildStopCallback(noTrainingStartHour, noTrainingEndHour, weekendsTraining):
+def buildStopCallback(enableNoTrainingHours, noTrainingStartHour, noTrainingEndHour, weekendsTraining):
     def stopAfterSubepochCallback(subEpochIndex, numSubEpochs):
         now = datetime.now()
         shouldPause = isNoTrainingWindow(
             now,
+            enableNoTrainingHours=enableNoTrainingHours,
             noTrainingStartHour=noTrainingStartHour,
             noTrainingEndHour=noTrainingEndHour,
             weekendsTraining=weekendsTraining,
@@ -130,6 +134,7 @@ if __name__ == "__main__":
     useAuxDyn = False
     resumeModelPath = r"C:\Users\Projet_3NC\Desktop\SC-ADS\Autopilot\training\run23\last_model.pth"
 
+    enableNoTrainingHours = True
     noTrainingStartHour = 7.50  # 07:30
     noTrainingEndHour = 17.50   # 18:00
     weekendsTraining = True     # True: no-training window applies only on weekdays
@@ -137,11 +142,14 @@ if __name__ == "__main__":
     schedulerCheckIntervalSeconds = 60
     restartDelaySeconds = 15
 
-    print(
-        "No-training window: "
-        f"{formatHour(noTrainingStartHour)}-{formatHour(noTrainingEndHour)} | "
-        f"weekendsTraining={weekendsTraining}"
-    )
+    if enableNoTrainingHours:
+        print(
+            "No-training window enabled: "
+            f"{formatHour(noTrainingStartHour)}-{formatHour(noTrainingEndHour)} | "
+            f"weekendsTraining={weekendsTraining}"
+        )
+    else:
+        print("No-training window disabled: training will run at all hours.")
 
     hasPrintedBlockedMessage = False
     resourcesFreed = False
@@ -150,6 +158,7 @@ if __name__ == "__main__":
         now = datetime.now()
         inNoTrainingWindow = isNoTrainingWindow(
             now,
+            enableNoTrainingHours=enableNoTrainingHours,
             noTrainingStartHour=noTrainingStartHour,
             noTrainingEndHour=noTrainingEndHour,
             weekendsTraining=weekendsTraining,
@@ -183,6 +192,7 @@ if __name__ == "__main__":
         resourcesFreed = False
 
         stopCallback = buildStopCallback(
+            enableNoTrainingHours=enableNoTrainingHours,
             noTrainingStartHour=noTrainingStartHour,
             noTrainingEndHour=noTrainingEndHour,
             weekendsTraining=weekendsTraining,
