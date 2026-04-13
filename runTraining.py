@@ -136,7 +136,7 @@ if __name__ == "__main__":
 
     enableNoTrainingHours = True
     noTrainingStartHour = 7.50  # 07:30
-    noTrainingEndHour = 17.50   # 18:00
+    noTrainingEndHour = 17.50   # 17:30
     weekendsTraining = True     # True: no-training window applies only on weekdays
 
     schedulerCheckIntervalSeconds = 60
