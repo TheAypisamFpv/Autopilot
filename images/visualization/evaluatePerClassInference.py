@@ -2,6 +2,8 @@ import json
 import os
 import random
 import sys
+import time
+from datetime import datetime
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -16,6 +18,7 @@ if projectRoot not in sys.path:
     sys.path.insert(0, projectRoot)
 
 from model.CreateModel import TrajectoryModel
+from model.progressBar import getProgressBar
 from model.train import DrivingDataset
 
 
@@ -36,8 +39,15 @@ numWorkers = 0
 randomSeed = 42
 deviceOverride = None
 
-outputCsvPath = os.path.join(os.path.dirname(__file__), f"{runName}_perClassMetrics.csv")
-outputFigurePath = os.path.join(os.path.dirname(__file__), f"{runName}_perClassAdeFde.png")
+outputDir = os.path.dirname(__file__)
+
+def getOutputPaths(modeSuffix):
+    baseName = f"{runName}_{modeSuffix}_perClass"
+    return {
+        "csv": os.path.join(outputDir, f"{baseName}Metrics.csv"),
+        "figure": os.path.join(outputDir, f"{baseName}AdeFde.png"),
+        "json": os.path.join(outputDir, f"{baseName}Results.json"),
+    }
 
 
 def ensureFileExists(filePath):
@@ -151,29 +161,35 @@ def selectClassIndices(datasetSamples, balancedData):
     return selectedIndices, indexToClass, requestedCountByClass
 
 
-def evaluatePerClass(model, evalLoader, selectedIndices, indexToClass, device):
+def evaluatePerClass(model, evalLoader, selectedIndices, indexToClass, device, useEgoHistory=True):
     metricSums = {
         className: {"count": 0, "adeSum": 0.0, "fdeSum": 0.0}
         for className in classOrder
     }
 
+    totalEvalSamples = len(selectedIndices)
+    totalBatches = len(evalLoader)
     cursor = 0
+    evaluatedSamples = 0
+    startTime = time.perf_counter()
+    print()
     with torch.no_grad():
-        for prevImage, currentImage, dynamicData, labels, vectorTimesBatch, egoHistory in evalLoader:
+        for batchIndex, (prevImage, currentImage, dynamicData, labels, vectorTimesBatch, egoHistory) in enumerate(evalLoader, start=1):
             del dynamicData
 
             prevImage = prevImage.to(device)
             currentImage = currentImage.to(device)
             labels = labels.to(device)
             vectorTimesBatch = vectorTimesBatch.to(device)
-            egoHistory = egoHistory.to(device)
+
+            egoHistoryInput = egoHistory.to(device) if useEgoHistory else None
 
             predKinematic, _, _ = model(
                 currentImage,
                 prevImage,
                 teacherForcing=False,
                 tfRatio=0.0,
-                egoHistory=egoHistory,
+                egoHistory=egoHistoryInput,
                 vectorTimes=vectorTimesBatch,
                 returnAttn=False,
             )
@@ -186,6 +202,19 @@ def evaluatePerClass(model, evalLoader, selectedIndices, indexToClass, device):
             fdePerSample = distanceTensor[:, -1].detach().cpu().numpy()
 
             batchCount = len(adePerSample)
+            evaluatedSamples += batchCount
+            completion = min(1.0, evaluatedSamples / max(1, totalEvalSamples))
+            elapsed = time.perf_counter() - startTime
+            eta = (elapsed / completion - elapsed) if completion > 0 else 0.0
+            finishTime = datetime.fromtimestamp(time.time() + eta)
+            etaTime = finishTime.strftime("%Y-%m-%d %H:%M:%S")
+            print(
+                f"{getProgressBar(completion, wheelIndex=batchIndex, maxbarLength=60)}"
+                f"Evaluating batch {batchIndex}/{totalBatches} ({evaluatedSamples}/{totalEvalSamples}) - ETA: {etaTime}",
+                end="\r",
+                flush=True,
+            )
+
             batchGlobalIndices = selectedIndices[cursor:cursor + batchCount]
             cursor += batchCount
 
@@ -203,6 +232,7 @@ def evaluatePerClass(model, evalLoader, selectedIndices, indexToClass, device):
                 metricSums[className]["adeSum"] += adeValue
                 metricSums[className]["fdeSum"] += fdeValue
 
+    print()
     return metricSums
 
 
@@ -230,7 +260,7 @@ def buildResultsDataframe(metricSums, requestedCountByClass):
     return pd.DataFrame(resultRows)
 
 
-def plotPerClassBars(resultDf):
+def plotPerClassBars(resultDf, figurePath, modeLabel):
     classNames = resultDf["className"].tolist()
     adeValues = resultDf["adeMeters"].to_numpy(dtype=float)
     fdeValues = resultDf["fdeMeters"].to_numpy(dtype=float)
@@ -254,17 +284,31 @@ def plotPerClassBars(resultDf):
     plt.ylabel("Error (meters)")
     plt.title(
         f"Per-class inference metrics ({runName})\n"
-        f"Target {samplesPerClass} samples per class"
+        f"Mode: {modeLabel} - Target {samplesPerClass} samples per class"
     )
     plt.grid(axis="y", alpha=0.25)
     plt.legend()
     plt.tight_layout()
-    plt.savefig(outputFigurePath, dpi=220)
+    plt.savefig(figurePath, dpi=220)
     plt.close()
 
 
+def serializeResultsToJson(resultDf, jsonPath, modeLabel):
+    outputData = {
+        "runName": runName,
+        "mode": modeLabel,
+        "targetSamplesPerClass": samplesPerClass,
+        "classOrder": classOrder,
+        "results": resultDf.to_dict(orient="records"),
+    }
+    with open(jsonPath, "w", encoding="utf-8") as jsonFile:
+        json.dump(outputData, jsonFile, indent=2)
+
+
 def main():
+    print("Loading training parameters...", end="\r")
     trainingParams = loadJsonFile(trainingParamsPath)
+    print("Training parameters loaded.    ")
 
     effectiveDatasetDir = datasetDir if datasetDir else trainingParams.get("datasetDir")
     if not effectiveDatasetDir:
@@ -284,12 +328,22 @@ def main():
     ensureFileExists(effectiveBalancedJsonPath)
     ensureFileExists(checkpointPath)
 
+    print("Loading balancing data...", end="\r")
     balancedData = loadJsonFile(effectiveBalancedJsonPath)
+    print("Balancing data loaded.   ")
     device = resolveDevice()
 
+    print(f"Using device: {device}")
+    print(f"Effective dataset directory: {effectiveDatasetDir}")
+    print(f"Balanced JSON path: {effectiveBalancedJsonPath}")
+    print("Building model and dataset...", end="\r")
     model, predSteps = buildModelFromParams(trainingParams, device)
+    print("Model and dataset ready.     ")
+    
+    print(f"Evaluating on {len(balancedData.get(classOrder[0], []))} samples per class (if available)...")
     evalTransform = buildEvalTransform()
-
+    
+    print("Creating evaluation dataset and loader...", end="\r")
     evalDataset = DrivingDataset(
         effectiveDatasetDir,
         transform=evalTransform,
@@ -298,30 +352,53 @@ def main():
         verbose=True,
         loadEgoHistory=True,
     )
+    print("Evaluation dataset and loader ready.     ")
 
     selectedIndices, indexToClass, requestedCountByClass = selectClassIndices(evalDataset.samples, balancedData)
     if len(selectedIndices) == 0:
         raise RuntimeError("No samples selected for evaluation. Check class keys and dataset alignment.")
 
-    evalSubset = Subset(evalDataset, selectedIndices)
-    evalLoader = DataLoader(
-        evalSubset,
-        batch_size=batchSize,
-        shuffle=False,
-        num_workers=numWorkers,
-        pin_memory=(device.type == "cuda"),
-    )
+    print(f"Selected {len(selectedIndices)} samples for evaluation across {len(requestedCountByClass)} classes.")
 
-    metricSums = evaluatePerClass(model, evalLoader, selectedIndices, indexToClass, device)
-    resultDf = buildResultsDataframe(metricSums, requestedCountByClass)
+    variants = [
+        ("withEgo", True),
+        ("withoutEgo", False),
+    ]
 
-    resultDf.to_csv(outputCsvPath, index=False)
-    plotPerClassBars(resultDf)
+    for modeName, useEgoHistory in variants:
+        print(f"\nPreparing evaluation dataset for mode: {modeName}...")
+        evalDatasetMode = evalDataset if useEgoHistory else DrivingDataset(
+            effectiveDatasetDir,
+            transform=evalTransform,
+            maxSize=None,
+            predSteps=predSteps,
+            verbose=True,
+            loadEgoHistory=False,
+        )
 
-    print("Per-class evaluation complete.")
-    print(f"CSV: {outputCsvPath}")
-    print(f"Figure: {outputFigurePath}")
-    print(resultDf.to_string(index=False))
+        evalSubset = Subset(evalDatasetMode, selectedIndices)
+        evalLoader = DataLoader(
+            evalSubset,
+            batch_size=batchSize,
+            shuffle=False,
+            num_workers=numWorkers,
+            pin_memory=(device.type == "cuda"),
+        )
+
+        print(f"Starting per-class evaluation ({modeName})...")
+        metricSums = evaluatePerClass(model, evalLoader, selectedIndices, indexToClass, device, useEgoHistory=useEgoHistory)
+        resultDf = buildResultsDataframe(metricSums, requestedCountByClass)
+
+        paths = getOutputPaths(modeName)
+        resultDf.to_csv(paths["csv"], index=False)
+        serializeResultsToJson(resultDf, paths["json"], modeName)
+        plotPerClassBars(resultDf, paths["figure"], modeName)
+
+        print(f"Per-class evaluation complete ({modeName}).")
+        print(f"CSV: {paths['csv']}")
+        print(f"JSON: {paths['json']}")
+        print(f"Figure: {paths['figure']}")
+        print(resultDf.to_string(index=False))
 
 
 if __name__ == "__main__":

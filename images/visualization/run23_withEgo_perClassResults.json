@@ -1,0 +1,49 @@
+{
+  "runName": "run23",
+  "mode": "withEgo",
+  "targetSamplesPerClass": 1000,
+  "classOrder": [
+    "straight",
+    "right",
+    "left",
+    "s",
+    "still"
+  ],
+  "results": [
+    {
+      "className": "straight",
+      "requestedSamples": 1000,
+      "evaluatedSamples": 1000,
+      "adeMeters": 0.2498218952678144,
+      "fdeMeters": 1.3237742017144338
+    },
+    {
+      "className": "right",
+      "requestedSamples": 1000,
+      "evaluatedSamples": 1000,
+      "adeMeters": 0.37128391036856917,
+      "fdeMeters": 2.1967655054051427
+    },
+    {
+      "className": "left",
+      "requestedSamples": 1000,
+      "evaluatedSamples": 1000,
+      "adeMeters": 0.3823433784302324,
+      "fdeMeters": 2.239923297767527
+    },
+    {
+      "className": "s",
+      "requestedSamples": 1000,
+      "evaluatedSamples": 1000,
+      "adeMeters": 0.3311477959062904,
+      "fdeMeters": 1.7684453893918544
+    },
+    {
+      "className": "still",
+      "requestedSamples": 1000,
+      "evaluatedSamples": 1000,
+      "adeMeters": 0.15109181936457752,
+      "fdeMeters": 0.9487863752399571
+    }
+  ]
+}
