@@ -14,3 +14,5 @@ ADS presentation/
 # No publishing of models and results of trained models with NVIDIA's dataset
 **/run1[8-9]/
 **/run[2-9][0-9]*/
+
+projectFileTree.txt

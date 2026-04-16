@@ -1225,7 +1225,7 @@ if __name__ == '__main__':
     USEGROUNDTRUTH = True
     REALTIME = False
 
-    modelPath = r"C:\Users\Aypisam\Documents\VS_Python_Project\Autopilot\training\run22\best_model.pth"
+    modelPath = r"C:\Users\Aypisam\Documents\VS_Python_Project\Autopilot\training\run23\best_model.pth"
     videoPath = r"C:\Users\Aypisam\Documents\VS_Python_Project\Autopilot\test_drive\2026\2026.03.05\GP016080_short.MP4"
     videoPath = r"C:\Users\Aypisam\Videos\Autopilot_Videos\Camera\camera_front_wide_120fov"
 
