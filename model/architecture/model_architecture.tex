@@ -9,71 +9,127 @@
 
 \begin{document}
 
-\title{TrajectoryModel Architecture Description}
+\title{TrajectoryModel Architecture (Motion-FPN + Cross-Attention Kinematic V2)}
 \author{}
-\date{}
+\date{Updated: 2026-04-14}
 \maketitle
 
 \section{Overview}
-The TrajectoryModel predicts future vehicle trajectories from two RGB images (current and previous frames). It uses a motion-aware encoder that extracts multi-scale features from each frame, fuses them with temporal differences, and then applies a lightweight transformer decoder to predict the future displacement vectors. An optional auxiliary head can predict a 2D dynamics vector from pooled features. The default input resolution is (B, 3, 360, 640), and the default output is (B, 12, 2) with non-uniform time offsets spanning 3 seconds.
+The current production model is the Motion-FPN + Cross-Attention Kinematic V2 planner, implemented in \texttt{model/CreateModel.py}.
+It predicts future ego kinematics from two consecutive front-camera frames and optional ego-history context.
+The model is built as a motion-aware image encoder plus a stepwise recurrent decoder that performs cross-attention over spatial memory at every prediction step.
 
-\section{Model Components}
+\section{Input and Output Specification}
 
-\subsection{Utility Blocks}
+\begin{center}
+\begin{tabular}{@{}p{0.28\linewidth}p{0.20\linewidth}p{0.45\linewidth}@{}}
+\toprule
+Item & Shape / Type & Notes \\
+\midrule
+Current frame $I_t$ & $(B,3,360,640)$ & RGB, normalized tensor \\
+Previous frame $I_{t-1}$ & $(B,3,360,640)$ & About 0.1 s before $I_t$ \\
+Ego history (optional) & $(B,8,3)$ & $[\text{speed},\text{accel},\text{yaw\_rate}]$ \\
+Prediction output & $(B,12,2)$ & $[\text{speed}_{m/s},\text{yawRate}_{rad/s}]$ \\
+Default horizon times & 12 values & Non-uniform 3.0 s horizon; full list in Section 6 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\section{Architecture Blocks}
+
+\subsection{Low-Level Utility Blocks}
 \begin{itemize}
-    \item \textbf{ConvGNAct}: A 2D convolution followed by group normalization and SiLU activation.
-    \item \textbf{SEBlock}: Squeeze-and-Excitation block that rescales channels using a global pooling and two-layer MLP.
-    \item \textbf{Residual}: Two ConvGNAct layers with a residual connection, optionally followed by SE attention.
+    \item \textbf{ConvGNAct}: convolution + GroupNorm + SiLU.
+    \item \textbf{SEBlock}: squeeze-excitation channel recalibration.
+    \item \textbf{Residual}: two ConvGNAct layers with residual skip, optional SE.
+    \item \textbf{FiLM}: feature-wise affine conditioning from ego context.
 \end{itemize}
 
-\subsection{MotionBackbone}
-A shared-weight CNN extracts features from each frame at two spatial scales.
+\subsection{MotionBackbone (Shared Weights)}
+Both frames are encoded by the same backbone.
 \begin{itemize}
-    \item \textbf{Input}: Image of shape (B, 3, H, W).
-    \item \textbf{Architecture}:
-        \begin{itemize}
-            \item \textit{Stem}: ConvGNAct (3 to base, kernel=5, stride=2), Residual (base, SE enabled).
-            \item \textit{Stage1}: ConvGNAct (base to 2\,base, stride=2), Residual (2\,base, SE enabled).
-            \item \textit{Stage2}: ConvGNAct (2\,base to 3\,base, stride=2), Residual (3\,base, SE enabled). Output is 1/8 resolution.
-            \item \textit{Stage3}: ConvGNAct (3\,base to 4\,base, stride=2), Residual (4\,base, SE enabled). Output is 1/16 resolution.
-        \end{itemize}
-    \item \textbf{Output}: Feature maps at 1/8 and 1/16 resolution.
+    \item Stem: ConvGNAct(3 to base, stride 2) + Residual(base, SE).
+    \item Stage1: ConvGNAct(base to 2 base, stride 2) + Residual(2 base, SE).
+    \item Stage2: ConvGNAct(2 base to 3 base, stride 2) + Residual(3 base, SE), output at $1/8$ scale.
+    \item Stage3: ConvGNAct(3 base to 4 base, stride 2) + Residual(4 base, SE), output at $1/16$ scale.
 \end{itemize}
 
 \subsection{MotionFpnEncoder}
-Fuses motion cues by comparing features between the current and previous frames.
+Per scale, the encoder builds motion-aware features from
+\[
+[f_t,\;f_{t-1},\;f_t-f_{t-1}]
+\]
+then applies 1x1 fusion convolutions, top-down FPN fusion, and a final ConvGNAct.
+
+Key details:
 \begin{itemize}
-    \item \textbf{Per-scale fusion}: Concatenate current features, previous features, and their difference, then apply a 1x1 convolution to a shared feature dimension.
-    \item \textbf{Top-down fusion}: Upsample the 1/16 features and add to the 1/8 features, followed by a ConvGNAct fusion block.
-    \item \textbf{Coordinate channels}: Append normalized x/y coordinate maps in the range [-1, 1].
-    \item \textbf{Output}: Feature map of shape (B, feat\_dim + 2, H/8, W/8). For 360x640 input, this is 45x80.
+    \item Two motion scales are fused: $1/8$ and $1/16$.
+    \item Normalized coordinate channels $(x,y)$ in $[-1,1]$ are appended.
+    \item FiLM uses ego-context to modulate the final fused map.
+    \item Optional motion-map output is available for visualization.
 \end{itemize}
 
-\subsection{VectorTransformerDecoder}
-The decoder predicts displacement vectors in parallel using a transformer decoder.
+Output tensor shape is $(B,\text{featDim}+2,H/8,W/8)$.
+For 360x640 input, this is approximately $(B,\text{featDim}+2,45,80)$.
+
+\subsection{EgoStateEncoder}
+A single-layer GRU encodes ego-history $(B,8,3)$ into a context vector $(B,256)$.
+During training, ego context uses dropout (default \texttt{egoDropoutProb=0.15}) to reduce ego-only shortcut behavior.
+
+\subsection{CrossAttentionDeltaKinematicDecoder}
+This decoder replaced the old parallel transformer-vector head.
+It is autoregressive and predicts \textbf{delta kinematic updates} step by step.
+
+Per prediction step:
 \begin{itemize}
-    \item \textbf{Memory}: The encoder feature map is projected with a 1x1 convolution and flattened to a sequence of length H\,W, followed by LayerNorm.
-    \item \textbf{Queries}: A learned query embedding of length pred\_steps is added to a time-step MLP embedding.
-    \item \textbf{Transformer decoder}: A lightweight decoder (default 2 layers, 4 heads) attends to the spatial memory.
-    \item \textbf{Output head}: Two-layer MLP that predicts (x, y) per step.
-    \item \textbf{Output}: Predicted trajectories of shape (B, pred\_steps, 2). Attention maps are not explicitly returned (filled with None).
+    \item Spatial memory: encoder map is projected to hidden dimension, flattened, and layer-normalized.
+    \item Time embedding: built from pair $(t_k,\Delta t_k)$.
+    \item Query token uses recurrent hidden state, ego context, previous kinematic state, and time embedding.
+    \item Cross-attention reads from spatial memory.
+    \item A GRU updates recurrent state and a delta head outputs $(\Delta v,\Delta \dot{\psi})$.
+    \item Current state is accumulated autoregressively.
 \end{itemize}
 
-\subsection{TrajectoryModel}
-The full model integrates the encoder, decoder, and optional auxiliary head.
-\begin{itemize}
-    \item \textbf{Parameters}: Feature dimension (feat\_dim), hidden dimension (hidden\_dim), prediction steps (pred\_steps=12), optional auxiliary dynamics (default False).
-    \item \textbf{Components}:
-        \begin{itemize}
-            \item MotionFpnEncoder (outputs feat\_dim + 2 channels with coordinate maps).
-            \item VectorTransformerDecoder (uses feat\_dim + 2).
-            \item Optional auxiliary head: AdaptiveAvgPool2d -> MLP (feat\_dim + 2 to 128 to 2).
-        \end{itemize}
-    \item \textbf{Time offsets}: If not provided, non-uniform offsets are generated for a 3-second horizon (0.1s x 6, 0.25s x 4, 0.7s x 2).
-    \item \textbf{Forward}: Returns predicted trajectories, optional auxiliary output, and a placeholder attention list.
-\end{itemize}
+Teacher forcing is one-step lagged to avoid current-step target leakage.
+Attention maps can be returned for analysis and visualization.
+
+\section{Temporal Rollout and Trajectory Integration}
+The model outputs speed and yaw-rate over non-uniform future offsets.
+Training and inference utilities integrate these kinematics as:
+
+\[
+\psi_t = \psi_{t-1} + \dot{\psi}_t\,\Delta t_t
+\]
+
+\[
+x_t = x_{t-1} + v_t\sin(\psi_t)\,\Delta t_t,
+\qquad
+y_t = y_{t-1} + v_t\cos(\psi_t)\,\Delta t_t
+\]
+
+where local coordinates are right-forward in meters.
+
+\section{Default Configuration (Current Family)}
+
+\begin{center}
+\begin{tabular}{@{}ll@{}}
+\toprule
+Parameter & Typical value \\
+\midrule
+featDim & 384 \\
+hiddenDim & 768 \\
+baseChannels & 48 \\
+numHeads & 8 \\
+numLayers & 4 \\
+predSteps & 12 \\
+vectorTimes (s) & $[0.1,0.2,0.3,0.4,0.5,0.6,0.85,1.1,1.35,1.6,2.3,3.0]$ \\
+model name & TrajectoryModel\_MotionFpn\_CrossAttentionKinematic\_V2 \\
+\bottomrule
+\end{tabular}
+\end{center}
 
 \section{Summary}
-The TrajectoryModel combines motion-aware multi-scale encoding with a transformer decoder to predict future vehicle trajectories from image pairs. The design is lightweight, supports non-uniform time steps, and optionally produces a compact auxiliary dynamics output.
+The current model is a motion-conditioned, ego-aware, cross-attention recurrent planner.
+Compared to the legacy transformer-vector formulation, V2 shifts to kinematic-state rollout with per-step spatial re-attention, which improves temporal consistency and makes attention diagnostics more interpretable.
 
 \end{document}
