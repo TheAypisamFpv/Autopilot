@@ -522,7 +522,7 @@ if __name__ == '__main__':
     runModelModule.DEBUG = DEBUG
     runModelModule.USEGROUNDTRUTH = USEGROUNDTRUTH
 
-    modelPath = r"C:\Users\Aypisam\Documents\VS_Python_Project\Autopilot\training\run21\best_model.pth"
+    modelPath = r"C:\Users\Aypisam\Documents\VS_Python_Project\Autopilot\training\run23\best_model.pth"
     videoPath = r"C:\Users\Aypisam\Videos\Autopilot_Videos\Camera\camera_front_wide_120fov"
     calibrationRoot = r"C:\Users\Aypisam\Videos\Autopilot_Videos\calibration"
 
