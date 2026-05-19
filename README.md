@@ -35,7 +35,7 @@ Examples of processed trajectory labels projected from the NVIDIA PhysicalAI-Aut
 
 ## Model Architecture
 
-![Model architecture diagram](model\architecture\ADS-TrajectoryModel_MotionFpn_CrossAttentionKinematic_V2-Architecture.svg)
+![Model architecture diagram](model/architecture/ADS-TrajectoryModel_MotionFpn_CrossAttentionKinematic_V2-Architecture.svg)
 
 Core blocks:
 
@@ -137,14 +137,14 @@ From `training/run23/training_params.json`:
 ### Performances (run23)
 
 ### Loss Curves
-![run23 Training Loss Curves with log10 y-axis](images\visualization\run23_lossLog10y.png)
+![run23 Training Loss Curves with log10 y-axis](images/visualization/run23_lossLog10y.png)
 
 #### Prediction Visualization
 
 | Front Facing Camera | Top-Down |
 |:---:|:---:|
-| ![Daylight right turn view from front facing camera](images\visualization\NVIDIA_viz\Day-Right_Turn_Intersection_CamView.png) | ![Daylight right turn top-down visualization](images\visualization\NVIDIA_viz\Day-Right_Turn_Intersection_TopDownView.png) |
-| ![Nighttime left turn view from front facing camera](images\visualization\NVIDIA_viz\Night-Left_Turn_Intersection_CamView.png) | ![Nighttime left turn top-down visualization](images\visualization\NVIDIA_viz\Night-Left_Turn_Intersection_TopDownView.png) |
+| ![Daylight right turn view from front facing camera](images/visualization/NVIDIA_viz/Day-Right_Turn_Intersection_CamView.png) | ![Daylight right turn top-down visualization](images/visualization/NVIDIA_viz/Day-Right_Turn_Intersection_TopDownView.png) |
+| ![Nighttime left turn view from front facing camera](images/visualization/NVIDIA_viz/Night-Left_Turn_Intersection_CamView.png) | ![Nighttime left turn top-down visualization](images/visualization/NVIDIA_viz/Night-Left_Turn_Intersection_TopDownView.png) |
 
 ## Inference and Visualization
 
